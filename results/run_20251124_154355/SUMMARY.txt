@@ -1,0 +1,21 @@
+======================================================================
+FRICTION ANALYSIS - SUMMARY REPORT
+======================================================================
+
+Timestamp: 20251124_154355
+Total Comments Analyzed: 500
+
+Agent Distribution:
+  - Claude_Code: 450
+  - Copilot: 50
+
+Friction Statistics (Mean Friction Score):
+  - Claude_Code: 0.2371 (n=450)
+  - Copilot: 0.2972 (n=50)
+
+Statistical Tests:
+  Point-Biserial Correlation (Friction vs Merge):
+    Correlation: nan
+    P-value: nan
+
+======================================================================

@@ -56,21 +56,21 @@ class FrictionAnalyzerProject:
     # ==========================================
     def inspect_dataset_schema(self):
         """
-        Ispeziona il dataset AIDev per verificare colonne e struttura
-        prima di procedere con l'analisi principale.
+        Inspect AIDev dataset to verify columns and structure
+        before proceeding with main analysis.
         """
         print("=" * 70)
         print(">>> Phase 0: Dataset Schema Inspection")
         print("=" * 70)
 
         try:
-            # Carica un sample di ogni subset per ispezionare lo schema
-            print("\n1. Inspecting all_pull_request...")
-            ds_pr = load_dataset("hao-li/AIDev", name="all_pull_request", split="train", streaming=True)
+            # Load a sample of each subset to inspect schema
+            print("\n1. Inspecting pull_request (pre-filtered for 100+ stars repos)...")
+            ds_pr = load_dataset("hao-li/AIDev", name="pull_request", split="train", streaming=True)
             sample_pr = next(iter(ds_pr))
             print(f"   Columns: {list(sample_pr.keys())}")
             print(f"   Sample keys with values:")
-            for key in list(sample_pr.keys())[:10]:  # Print first 10 columns
+            for key in list(sample_pr.keys())[:10]:
                 print(f"      {key}: {sample_pr[key]}")
 
             print("\n2. Inspecting pr_review_comments_v2...")
@@ -81,20 +81,12 @@ class FrictionAnalyzerProject:
             for key in list(sample_comment.keys())[:10]:
                 print(f"      {key}: {sample_comment[key]}")
 
-            print("\n3. Inspecting human_pull_request...")
-            ds_human = load_dataset("hao-li/AIDev", name="human_pull_request", split="train", streaming=True)
-            sample_human = next(iter(ds_human))
-            print(f"   Columns: {list(sample_human.keys())}")
-            print(f"   Sample keys with values:")
-            for key in list(sample_human.keys())[:10]:
-                print(f"      {key}: {sample_human[key]}")
-
             print("\n" + "=" * 70)
             print("Schema inspection complete. Proceeding with data loading...")
             print("=" * 70 + "\n")
 
         except Exception as e:
-            print(f"⚠️  Warning during schema inspection: {e}")
+            print(f"Warning during schema inspection: {e}")
             print("Continuing with pipeline...\n")
 
     # ==========================================
@@ -102,88 +94,121 @@ class FrictionAnalyzerProject:
     # ==========================================
     def load_data(self):
         """
-        Scarica il dataset AIDev da Hugging Face e carica le tabelle necessarie.
-        Ora include anche i dati umani per il confronto baseline.
+        Downloads the AIDev dataset from Hugging Face and loads necessary tables.
+        Uses the 'pull_request' subset which already contains only repos with 100+ GitHub stars.
+        Also loads reviews and PR task types for comprehensive analysis.
         """
         print(">>> Phase 1: Loading AIDev dataset from Hugging Face...")
 
         try:
-            # 1. Carica Metadata PR AI (per identificare Agenti AI e Outcome)
-            print("Loading AI Pull Requests metadata...")
-            ds_pr = load_dataset("hao-li/AIDev", name="all_pull_request", split="train")
+            # 1. Load AI Pull Requests metadata (pre-filtered for 100+ stars repos)
+            print("Loading AI Pull Requests metadata (pre-filtered for 100+ stars repos)...")
+            ds_pr = load_dataset("hao-li/AIDev", name="pull_request", split="train")
             self.data['prs'] = ds_pr.to_pandas()
-            print(f"   Loaded {len(self.data['prs'])} AI PRs")
+            print(f"   Loaded {len(self.data['prs'])} AI PRs from 100+ stars repositories")
 
-            # 2. Carica Commenti di Review
-            print("Loading Review Comments...")
+            # 2. Load Review Comments (inline comments on code)
+            print("Loading Review Comments (inline)...")
             ds_comments = load_dataset("hao-li/AIDev", name="pr_review_comments_v2", split="train")
             self.data['comments'] = ds_comments.to_pandas()
             print(f"   Loaded {len(self.data['comments'])} review comments")
 
-            # 3. Carica PR Umane per baseline confronto
-            print("Loading Human Pull Requests (baseline)...")
-            ds_human = load_dataset("hao-li/AIDev", name="human_pull_request", split="train")
-            self.data['human_prs'] = ds_human.to_pandas()
-            print(f"   Loaded {len(self.data['human_prs'])} human PRs")
+            # 3. Load Reviews (top-level review summaries)
+            print("Loading Reviews (top-level)...")
+            ds_reviews = load_dataset("hao-li/AIDev", name="pr_reviews", split="train")
+            self.data['reviews'] = ds_reviews.to_pandas()
+            print(f"   Loaded {len(self.data['reviews'])} reviews")
 
-            # 4. Carica commenti umani (se esiste un subset dedicato, altrimenti li estrarremo dopo)
-            # Per ora assumiamo che i commenti umani siano linkati via PR IDs
+            # 4. Load PR Task Types (fix, feat, docs, etc.)
+            print("Loading PR Task Types...")
+            ds_task_types = load_dataset("hao-li/AIDev", name="pr_task_type", split="train")
+            self.data['task_types'] = ds_task_types.to_pandas()
+            print(f"   Loaded {len(self.data['task_types'])} PR task type classifications")
 
             print(f"\nData Loading Complete:")
-            print(f"  - AI PRs: {len(self.data['prs'])}")
-            print(f"  - Human PRs: {len(self.data['human_prs'])}")
-            print(f"  - Review Comments: {len(self.data['comments'])}")
+            print(f"  - AI PRs (100+ stars repos): {len(self.data['prs'])}")
+            print(f"  - Review Comments (inline): {len(self.data['comments'])}")
+            print(f"  - Reviews (top-level): {len(self.data['reviews'])}")
+            print(f"  - PR Task Types: {len(self.data['task_types'])}")
 
-            # Validazione: Verifica che i dataframe non siano vuoti
+            # Validation: Check that dataframes are not empty
             if len(self.data['prs']) == 0 or len(self.data['comments']) == 0:
-                raise ValueError("⚠️  ERROR: Loaded empty dataframes! Check dataset access.")
+                raise ValueError("ERROR: Loaded empty dataframes! Check dataset access.")
 
         except Exception as e:
-            print(f"❌ Errore nel caricamento: {e}")
-            print("Verificare connessione internet e accesso al dataset HuggingFace.")
+            print(f"Error loading data: {e}")
+            print("Check internet connection and HuggingFace dataset access.")
             raise
 
     def preprocess_data(self):
         """
-        Pulisce i testi, filtra i bot, e unisce i dataframe.
-        Integra REALMENTE i dati umani dal subset human_pull_request.
+        Cleans text, filters bots, merges dataframes.
+        - Filters PRs closed in less than 1 minute
+        - Processes both inline comments and top-level reviews
+        - Adds PR task type classification
         """
         print(">>> Phase 1b: Preprocessing & Filtering...")
 
         df_prs = self.data['prs'].copy()
-        df_human_prs = self.data['human_prs'].copy()
         df_comments = self.data['comments'].copy()
+        df_reviews = self.data['reviews'].copy()
+        df_task_types = self.data['task_types'].copy()
 
         print(f"\nInspecting columns for join keys...")
-        print(f"  AI PRs columns: {list(df_prs.columns)[:15]}...")  # Show first 15
-        print(f"  Human PRs columns: {list(df_human_prs.columns)[:15]}...")
+        print(f"  AI PRs columns: {list(df_prs.columns)[:15]}...")
         print(f"  Comments columns: {list(df_comments.columns)[:15]}...")
+        print(f"  Reviews columns: {list(df_reviews.columns)[:15]}...")
 
-        # === STEP 1: Merge AI PRs with Comments ===
-        print("\n1. Merging AI PRs with review comments...")
+        # === STEP 1: Filter PRs closed in less than 1 minute ===
+        print("\n1. Filtering PRs closed in less than 1 minute...")
 
-        # The comments have 'pull_request_url' which is an API URL
-        # We need to extract repo+number from both to match them
-        # Example pull_request_url: "https://api.github.com/repos/owner/repo/pulls/123"
+        prs_before = len(df_prs)
+        df_prs['created_at'] = pd.to_datetime(df_prs['created_at'], errors='coerce')
+        df_prs['closed_at'] = pd.to_datetime(df_prs['closed_at'], errors='coerce')
+
+        # Calculate duration in seconds
+        df_prs['pr_duration_seconds'] = (df_prs['closed_at'] - df_prs['created_at']).dt.total_seconds()
+
+        # Filter out PRs closed in less than 60 seconds (1 minute)
+        df_prs = df_prs[(df_prs['pr_duration_seconds'].isna()) | (df_prs['pr_duration_seconds'] >= 60)]
+        print(f"   ✓ Filtered {prs_before - len(df_prs)} PRs closed in < 1 minute")
+        print(f"   Remaining PRs: {len(df_prs)}")
+
+        # === STEP 2: Add PR Task Types ===
+        print("\n2. Adding PR task types (fix, feat, docs, etc.)...")
+
+        # Merge task types with PRs using PR id
+        df_prs = pd.merge(
+            df_prs,
+            df_task_types[['id', 'type', 'confidence']],
+            on='id',
+            how='left'
+        )
+        df_prs['pr_type'] = df_prs['type'].fillna('unknown')
+
+        type_counts = df_prs['pr_type'].value_counts()
+        print(f"   PR type distribution:")
+        for pr_type, count in type_counts.head(10).items():
+            print(f"      {pr_type}: {count}")
+
+        # === STEP 3: Extract repo info for merging ===
+        print("\n3. Extracting repository information for merging...")
 
         # Extract PR identification from comments
         if 'pull_request_url' in df_comments.columns:
-            # Extract repo and PR number from URL
             def extract_pr_info(url):
                 if pd.isna(url) or not isinstance(url, str):
                     return None, None
-                # Format: https://api.github.com/repos/OWNER/REPO/pulls/NUMBER
                 parts = url.split('/')
                 if len(parts) >= 7 and 'repos' in parts:
-                    owner_repo = f"{parts[-4]}/{parts[-3]}"  # owner/repo
-                    pr_number = parts[-1]  # PR number
+                    owner_repo = f"{parts[-4]}/{parts[-3]}"
+                    pr_number = parts[-1]
                     return owner_repo, pr_number
                 return None, None
 
             df_comments[['repo_path', 'pr_number']] = df_comments['pull_request_url'].apply(
                 lambda x: pd.Series(extract_pr_info(x))
             )
-            # Convert PR number to int
             df_comments['pr_number'] = pd.to_numeric(df_comments['pr_number'], errors='coerce')
 
         # Extract repo info from PRs
@@ -191,7 +216,6 @@ class FrictionAnalyzerProject:
             def extract_repo_path(url):
                 if pd.isna(url) or not isinstance(url, str):
                     return None
-                # Format: https://api.github.com/repos/OWNER/REPO
                 parts = url.split('/')
                 if len(parts) >= 5 and 'repos' in parts:
                     return f"{parts[-2]}/{parts[-1]}"
@@ -199,10 +223,10 @@ class FrictionAnalyzerProject:
 
             df_prs['repo_path'] = df_prs['repo_url'].apply(extract_repo_path)
 
-        # Now merge on repo_path + number (from PR) with pr_number (from comments)
-        print(f"   Attempting merge on repo_path + PR number...")
+        # === STEP 4: Merge Comments with PRs ===
+        print("\n4. Merging inline comments with PRs...")
 
-        ai_merged = pd.merge(
+        merged_comments = pd.merge(
             df_comments,
             df_prs,
             left_on=['repo_path', 'pr_number'],
@@ -210,83 +234,58 @@ class FrictionAnalyzerProject:
             how='inner',
             suffixes=('_comment', '_pr')
         )
+        merged_comments['source'] = 'comment'  # Mark source type
+        print(f"   ✓ Merged comments: {len(merged_comments)} comment-PR pairs")
 
-        print(f"   ✓ AI merge successful: {len(ai_merged)} comment-PR pairs")
+        # === STEP 5: Merge Reviews with PRs ===
+        print("\n5. Merging top-level reviews with PRs...")
 
-        if len(ai_merged) == 0:
-            print("   ⚠️  WARNING: No matches found between comments and AI PRs!")
-            print("   This might indicate a data inconsistency. Checking sample URLs...")
-            print(f"   Sample comment URL: {df_comments['pull_request_url'].iloc[0] if len(df_comments) > 0 else 'N/A'}")
-            print(f"   Sample PR repo_url: {df_prs['repo_url'].iloc[0] if len(df_prs) > 0 else 'N/A'}")
-
-        # Ensure agent column exists and is labeled
-        if 'agent' not in ai_merged.columns:
-            print("   ⚠️  Warning: 'agent' column not found in AI PRs")
-            ai_merged['agent'] = 'Unknown_AI'
-        else:
-            # Fill any null agents with 'Unknown_AI'
-            ai_merged['agent'] = ai_merged['agent'].fillna('Unknown_AI')
-
-        # === STEP 2: Merge Human PRs with Comments ===
-        print("\n2. Merging Human PRs with review comments...")
-
-        # Add 'Human' label to human PRs
-        df_human_prs['agent'] = 'Human'
-
-        # Extract repo path from human PRs (same logic as AI PRs)
-        if 'repo_url' in df_human_prs.columns:
-            df_human_prs['repo_path'] = df_human_prs['repo_url'].apply(extract_repo_path)
-
-        # Merge using repo_path + number
-        human_merged = pd.merge(
-            df_comments,
-            df_human_prs,
-            left_on=['repo_path', 'pr_number'],
-            right_on=['repo_path', 'number'],
+        # Reviews use pr_id to reference the PR
+        merged_reviews = pd.merge(
+            df_reviews,
+            df_prs,
+            left_on='pr_id',
+            right_on='id',
             how='inner',
-            suffixes=('_comment', '_pr')
+            suffixes=('_review', '_pr')
         )
+        merged_reviews['source'] = 'review'  # Mark source type
+        print(f"   ✓ Merged reviews: {len(merged_reviews)} review-PR pairs")
 
-        print(f"   ✓ Human merge successful: {len(human_merged)} comment-PR pairs")
+        # === STEP 6: Filter Bots from Comments ===
+        print("\n6. Filtering bot comments...")
 
-        if len(human_merged) == 0:
-            print("   ⚠️  WARNING: No matches found between comments and Human PRs!")
-
-        # === STEP 3: Combine AI and Human datasets ===
-        print("\n3. Combining AI and Human datasets...")
-
-        # Ensure both have the same columns (take intersection)
-        common_cols = list(set(ai_merged.columns) & set(human_merged.columns))
-        ai_merged = ai_merged[common_cols]
-        human_merged = human_merged[common_cols]
-
-        merged = pd.concat([ai_merged, human_merged], ignore_index=True)
-        print(f"   ✓ Combined dataset: {len(merged)} total rows")
-        print(f"   ✓ AI comments: {len(ai_merged)}, Human comments: {len(human_merged)}")
-
-        # === STEP 4: Filter Bots ===
-        print("\n4. Filtering bot comments...")
-
-        # Look for user column (could be 'user_name', 'user', 'author', etc.)
         user_col = None
         for possible_name in ['user_name', 'user', 'author', 'login', 'user_comment', 'author_comment']:
-            if possible_name in merged.columns:
+            if possible_name in merged_comments.columns:
                 user_col = possible_name
                 break
 
         if user_col:
-            bot_patterns = [r'\[bot\]', r'jenkins', r'ci/cd', r'linter', r'coverage', r'dependabot']
-            merged['is_bot'] = merged[user_col].apply(
+            bot_patterns = [r'\[bot\]', r'jenkins', r'ci/cd', r'linter', r'coverage', r'dependabot', r'coderabbit', r'copilot']
+            merged_comments['is_bot'] = merged_comments[user_col].apply(
                 lambda x: any(re.search(p, str(x).lower()) for p in bot_patterns) if pd.notnull(x) else False
             )
-            before_count = len(merged)
-            merged = merged[~merged['is_bot']]
-            print(f"   ✓ Filtered {before_count - len(merged)} bot comments")
-        else:
-            print(f"   ⚠️  Warning: Could not find user column for bot filtering")
+            before_count = len(merged_comments)
+            merged_comments = merged_comments[~merged_comments['is_bot']]
+            print(f"   ✓ Filtered {before_count - len(merged_comments)} bot comments")
 
-        # === STEP 5: Text Cleaning ===
-        print("\n5. Cleaning comment text...")
+        # === STEP 7: Filter Bots from Reviews ===
+        print("\n7. Filtering bot reviews...")
+
+        if 'user' in merged_reviews.columns:
+            merged_reviews['is_bot'] = merged_reviews['user'].apply(
+                lambda x: any(re.search(p, str(x).lower()) for p in bot_patterns) if pd.notnull(x) else False
+            )
+            # Also filter by user_type if available
+            if 'user_type' in merged_reviews.columns:
+                merged_reviews['is_bot'] = merged_reviews['is_bot'] | (merged_reviews['user_type'] == 'Bot')
+            before_count = len(merged_reviews)
+            merged_reviews = merged_reviews[~merged_reviews['is_bot']]
+            print(f"   ✓ Filtered {before_count - len(merged_reviews)} bot reviews")
+
+        # === STEP 8: Text Cleaning ===
+        print("\n8. Cleaning text...")
 
         def clean_text(text):
             if not isinstance(text, str):
@@ -299,43 +298,107 @@ class FrictionAnalyzerProject:
             text = re.sub(r'\s+', ' ', text).strip()
             return text
 
-        # Look for body column
-        body_col = None
+        # Clean comments
+        body_col_comments = None
         for possible_name in ['body', 'body_comment', 'comment', 'text', 'content']:
-            if possible_name in merged.columns:
-                body_col = possible_name
+            if possible_name in merged_comments.columns:
+                body_col_comments = possible_name
                 break
 
-        if not body_col:
-            raise ValueError(f"❌ ERROR: Could not find comment body column! Available: {merged.columns.tolist()}")
+        if body_col_comments:
+            merged_comments['clean_body'] = merged_comments[body_col_comments].apply(clean_text)
+            before_count = len(merged_comments)
+            merged_comments = merged_comments[merged_comments['clean_body'].str.len() > 10]
+            print(f"   ✓ Comments: Removed {before_count - len(merged_comments)} empty/too-short")
 
-        merged['clean_body'] = merged[body_col].apply(clean_text)
+        # Clean reviews
+        body_col_reviews = None
+        for possible_name in ['body', 'body_review', 'review', 'text', 'content']:
+            if possible_name in merged_reviews.columns:
+                body_col_reviews = possible_name
+                break
 
-        # Filter out empty comments
-        before_count = len(merged)
-        merged = merged[merged['clean_body'].str.len() > 10]  # At least 10 characters
-        print(f"   ✓ Removed {before_count - len(merged)} empty/too-short comments")
+        if body_col_reviews:
+            merged_reviews['clean_body'] = merged_reviews[body_col_reviews].apply(clean_text)
+            before_count = len(merged_reviews)
+            merged_reviews = merged_reviews[merged_reviews['clean_body'].str.len() > 10]
+            print(f"   ✓ Reviews: Removed {before_count - len(merged_reviews)} empty/too-short")
 
-        # === STEP 6: Validation ===
-        print("\n6. Validating merged dataset...")
+        # === STEP 9: Standardize columns and combine ===
+        print("\n9. Standardizing and combining datasets...")
 
-        if len(merged) == 0:
+        # Ensure agent column exists
+        for df in [merged_comments, merged_reviews]:
+            if 'agent' not in df.columns:
+                df['agent'] = 'Unknown_AI'
+            else:
+                df['agent'] = df['agent'].fillna('Unknown_AI')
+
+            if 'pr_type' not in df.columns:
+                df['pr_type'] = 'unknown'
+
+        # Select common columns for combined dataset
+        common_cols = ['clean_body', 'agent', 'source', 'pr_type', 'created_at', 'closed_at', 'state']
+
+        # Add id columns for tracking
+        if 'id_pr' in merged_comments.columns:
+            common_cols.append('id_pr')
+        elif 'id' in merged_comments.columns:
+            merged_comments['id_pr'] = merged_comments['id']
+            common_cols.append('id_pr')
+
+        if 'id_pr' not in merged_reviews.columns and 'id_pr' in merged_reviews.columns:
+            pass
+        elif 'pr_id' in merged_reviews.columns:
+            merged_reviews['id_pr'] = merged_reviews['pr_id']
+
+        # Filter to available columns
+        available_cols_comments = [c for c in common_cols if c in merged_comments.columns]
+        available_cols_reviews = [c for c in common_cols if c in merged_reviews.columns]
+
+        # Store separate datasets
+        self.comments_df = merged_comments.copy()
+        self.reviews_df = merged_reviews.copy()
+
+        # Create combined dataset
+        combined = pd.concat([
+            merged_comments[available_cols_comments],
+            merged_reviews[available_cols_reviews]
+        ], ignore_index=True)
+
+        # === STEP 10: Validation ===
+        print("\n10. Validating datasets...")
+
+        print(f"   ✓ Comments dataset: {len(self.comments_df)} rows")
+        print(f"   ✓ Reviews dataset: {len(self.reviews_df)} rows")
+        print(f"   ✓ Combined dataset: {len(combined)} rows")
+
+        if len(combined) == 0:
             raise ValueError("❌ ERROR: No data remained after preprocessing!")
 
         # Check agent distribution
-        agent_counts = merged['agent'].value_counts()
-        print(f"   ✓ Agent distribution:")
+        agent_counts = combined['agent'].value_counts()
+        print(f"\n   Agent distribution (combined):")
         for agent, count in agent_counts.items():
-            print(f"      {agent}: {count} comments")
+            print(f"      {agent}: {count}")
 
-        # Check for required columns
-        required_cols = ['clean_body', 'agent']
-        missing_cols = [col for col in required_cols if col not in merged.columns]
-        if missing_cols:
-            raise ValueError(f"❌ ERROR: Missing required columns: {missing_cols}")
+        # Check source distribution
+        source_counts = combined['source'].value_counts()
+        print(f"\n   Source distribution:")
+        for source, count in source_counts.items():
+            print(f"      {source}: {count}")
 
-        self.dataset = merged
-        print(f"\n✅ Preprocessing Complete. Analysis Dataset size: {len(self.dataset)} rows.")
+        # Check PR type distribution
+        type_counts = combined['pr_type'].value_counts()
+        print(f"\n   PR type distribution:")
+        for pr_type, count in type_counts.head(10).items():
+            print(f"      {pr_type}: {count}")
+
+        self.dataset = combined
+        print(f"\n✅ Preprocessing Complete.")
+        print(f"   - Comments: {len(self.comments_df)}")
+        print(f"   - Reviews: {len(self.reviews_df)}")
+        print(f"   - Combined: {len(self.dataset)}")
         print(f"   Ready for sentiment analysis!")
 
     # ==========================================
@@ -344,74 +407,126 @@ class FrictionAnalyzerProject:
     def analyze_sentiment(self):
         """
         Applica RoBERTa pre-trained per calcolare sentiment.
-        Mapping: Label 0 (Neg), 1 (Neu), 2 (Pos).
+        Analyzes both combined dataset and separate comments/reviews.
         Friction Score = Probabilità Negativa.
         """
         print(">>> Phase 2: Running Sentiment Analysis (RoBERTa)...")
-        
+
         device = 0 if torch.cuda.is_available() else -1
         print(f"   Using device: {'GPU' if device == 0 else 'CPU'}")
         sentiment_pipe = pipeline("sentiment-analysis", model=self.models['sentiment'], tokenizer=self.models['sentiment'], device=device, top_k=None)
-        
-        # PRODUCTION MODE: Process full dataset
+
         batch_size = 32
-        texts = self.dataset['clean_body'].tolist()
-        print(f"   Processing {len(texts)} comments in batches of {batch_size}...")
-        
-        results = []
-        for i in tqdm(range(0, len(texts), batch_size)):
-            batch = texts[i:i+batch_size]
-            # Troncamento necessario per BERT (max 512 tokens)
-            preds = sentiment_pipe(batch, truncation=True, max_length=512)
-            results.extend(preds)
-            
-        # Parsing results: Estraiamo score Negativo come "Friction Score"
-        friction_scores = []
-        sentiments = []
-        
-        for res in results:
-            # res è una lista di dict [{'label': 'negative', 'score': 0.9}, ...]
-            neg_score = next((item['score'] for item in res if item['label'] == 'negative'), 0)
-            label = max(res, key=lambda x: x['score'])['label']
-            friction_scores.append(neg_score)
-            sentiments.append(label)
-            
-        # Riattacchiamo al dataframe (sul subset elaborato)
-        subset = self.dataset.iloc[:len(texts)].copy()
-        subset['friction_score'] = friction_scores
-        subset['sentiment_label'] = sentiments
-        subset['is_negative'] = subset['sentiment_label'] == 'negative'
-        
-        self.analyzed_df = subset
-        print("Sentiment Analysis Complete.")
+
+        def run_sentiment_analysis(df, name):
+            """Helper to run sentiment analysis on a dataframe"""
+            texts = df['clean_body'].tolist()
+            print(f"\n   Processing {len(texts)} {name} in batches of {batch_size}...")
+
+            results = []
+            for i in tqdm(range(0, len(texts), batch_size), desc=f"   {name}"):
+                batch = texts[i:i+batch_size]
+                preds = sentiment_pipe(batch, truncation=True, max_length=512)
+                results.extend(preds)
+
+            friction_scores = []
+            sentiments = []
+
+            for res in results:
+                neg_score = next((item['score'] for item in res if item['label'] == 'negative'), 0)
+                label = max(res, key=lambda x: x['score'])['label']
+                friction_scores.append(neg_score)
+                sentiments.append(label)
+
+            df_copy = df.iloc[:len(texts)].copy()
+            df_copy['friction_score'] = friction_scores
+            df_copy['sentiment_label'] = sentiments
+            df_copy['is_negative'] = df_copy['sentiment_label'] == 'negative'
+
+            return df_copy
+
+        # Analyze combined dataset
+        print("\n   === Analyzing Combined Dataset ===")
+        self.analyzed_df = run_sentiment_analysis(self.dataset, "combined items")
+
+        # Analyze comments separately
+        print("\n   === Analyzing Comments ===")
+        self.analyzed_comments_df = run_sentiment_analysis(self.comments_df, "comments")
+
+        # Analyze reviews separately
+        print("\n   === Analyzing Reviews ===")
+        self.analyzed_reviews_df = run_sentiment_analysis(self.reviews_df, "reviews")
+
+        # Summary statistics
+        print("\n   === Sentiment Analysis Summary ===")
+        print(f"   Combined: {len(self.analyzed_df)} items")
+        print(f"      - Negative: {self.analyzed_df['is_negative'].sum()} ({100*self.analyzed_df['is_negative'].mean():.1f}%)")
+        print(f"      - Mean friction: {self.analyzed_df['friction_score'].mean():.3f}")
+
+        print(f"\n   Comments: {len(self.analyzed_comments_df)} items")
+        print(f"      - Negative: {self.analyzed_comments_df['is_negative'].sum()} ({100*self.analyzed_comments_df['is_negative'].mean():.1f}%)")
+        print(f"      - Mean friction: {self.analyzed_comments_df['friction_score'].mean():.3f}")
+
+        print(f"\n   Reviews: {len(self.analyzed_reviews_df)} items")
+        print(f"      - Negative: {self.analyzed_reviews_df['is_negative'].sum()} ({100*self.analyzed_reviews_df['is_negative'].mean():.1f}%)")
+        print(f"      - Mean friction: {self.analyzed_reviews_df['friction_score'].mean():.3f}")
+
+        print("\nSentiment Analysis Complete.")
 
     # ==========================================
     # PHASE 3: Topic Modeling (BERTopic)
     # ==========================================
     def extract_friction_topics(self):
         """
-        Applica BERTopic solo sui commenti negativi per identificare le cause di friction.
-        RQ2: Which specific topics generate the most friction?
+        Apply BERTopic on negative comments to identify friction causes.
+        RQ3: Which specific topics generate the most friction?
+
+        Uses best practices:
+        - CountVectorizer with stopwords removal AFTER clustering
+        - ClassTfidfTransformer to reduce frequent word impact
+        - N-gram range (1,2) for better topic representations
         """
         print(">>> Phase 3: Topic Modeling on Negative Comments...")
-        
+
+        from sklearn.feature_extraction.text import CountVectorizer
+        from bertopic.vectorizers import ClassTfidfTransformer
+
         negative_comments = self.analyzed_df[self.analyzed_df['is_negative']]['clean_body'].tolist()
-        
+
         if len(negative_comments) < 10:
             print("Not enough negative comments for Topic Modeling.")
             return
-            
-        topic_model = BERTopic(embedding_model=self.models['topic_embedding'], min_topic_size=5)
+
+        print(f"   Processing {len(negative_comments)} negative comments...")
+
+        # CountVectorizer to remove stopwords AFTER clustering (BERTopic best practice)
+        vectorizer_model = CountVectorizer(
+            stop_words="english",
+            min_df=2,
+            ngram_range=(1, 2)
+        )
+
+        # ClassTfidfTransformer to reduce impact of frequent words
+        ctfidf_model = ClassTfidfTransformer(reduce_frequent_words=True)
+
+        topic_model = BERTopic(
+            embedding_model=self.models['topic_embedding'],
+            vectorizer_model=vectorizer_model,
+            ctfidf_model=ctfidf_model,
+            min_topic_size=5,
+            nr_topics="auto"
+        )
+
         topics, probs = topic_model.fit_transform(negative_comments)
-        
-        # Estraiamo info sui topic
+
+        # Extract topic info
         topic_info = topic_model.get_topic_info()
         print("Top Friction Topics identified:")
-        print(topic_info.head())
-        
-        # Salviamo mappa topic per uso futuro
+        print(topic_info.head(10))
+
+        # Save topic map for future use
         self.results['topics'] = topic_info
-        self.topic_model = topic_model # Salva modello per visualizzazioni
+        self.topic_model = topic_model
 
     # ==========================================
     # PHASE 3b: Friction Category Classification
@@ -537,23 +652,54 @@ class FrictionAnalyzerProject:
     # ==========================================
     def analyze_outcomes(self):
         """
-        RQ1, RQ3, RQ4: Aggrega metriche e calcola statistiche.
+        RQ1, RQ2, RQ4: Aggregate metrics and calculate statistics.
+        Focus on comparing AI agents (no Human baseline).
         """
         print(">>> Phase 4: Statistical Analysis...")
         df = self.analyzed_df
-        
-        # RQ1 & RQ3: Friction by Agent vs Human
+
+        # RQ1: Friction by AI Agent
         friction_by_agent = df.groupby('agent')['friction_score'].agg(['mean', 'count', 'std']).reset_index()
         self.results['friction_stats'] = friction_by_agent
-        
-        # Statistical Test (Mann-Whitney U) Human vs AI (se abbiamo entrambi)
-        humans = df[df['agent'] == 'Human']['friction_score']
-        ais = df[df['agent'] != 'Human']['friction_score']
-        
-        if len(humans) > 0 and len(ais) > 0:
-            stat, p_val = stats.mannwhitneyu(humans, ais, alternative='two-sided')
-            self.results['mann_whitney'] = {'stat': stat, 'p_value': p_val}
-            print(f"Human vs AI Friction Difference: p-value = {p_val:.4f}")
+
+        print("\n   Friction Statistics by Agent:")
+        print(friction_by_agent.to_string(index=False))
+
+        # RQ2: Statistical Test - Kruskal-Wallis across AI agents
+        print("\n   Kruskal-Wallis test across AI agents...")
+        agent_groups = [group['friction_score'].values for name, group in df.groupby('agent')]
+
+        if len(agent_groups) >= 2 and all(len(g) >= 2 for g in agent_groups):
+            try:
+                stat, p_val = stats.kruskal(*agent_groups)
+                self.results['kruskal_wallis_agents'] = {'stat': stat, 'p_value': p_val}
+                sig = "Yes" if p_val < 0.05 else "No"
+                print(f"   Kruskal-Wallis test: H={stat:.2f}, p={p_val:.4f}, Significant: {sig}")
+
+                # Post-hoc pairwise comparisons if significant
+                if p_val < 0.05:
+                    print("\n   Pairwise Mann-Whitney U tests (post-hoc):")
+                    agents = df['agent'].unique()
+                    pairwise_results = []
+                    for i in range(len(agents)):
+                        for j in range(i + 1, len(agents)):
+                            a1, a2 = agents[i], agents[j]
+                            g1 = df[df['agent'] == a1]['friction_score']
+                            g2 = df[df['agent'] == a2]['friction_score']
+                            if len(g1) >= 2 and len(g2) >= 2:
+                                mw_stat, mw_p = stats.mannwhitneyu(g1, g2, alternative='two-sided')
+                                pairwise_results.append({
+                                    'pair': f"{a1} vs {a2}",
+                                    'stat': mw_stat,
+                                    'p_value': mw_p
+                                })
+                                sig_mark = "*" if mw_p < 0.05 else ""
+                                print(f"      {a1} vs {a2}: U={mw_stat:.0f}, p={mw_p:.4f} {sig_mark}")
+                    self.results['pairwise_tests'] = pairwise_results
+            except Exception as e:
+                print(f"   Kruskal-Wallis test failed: {e}")
+        else:
+            print("   Insufficient data for Kruskal-Wallis test")
         
         # RQ4: Correlation with Merge Outcome
         # Check if we have state column
@@ -568,9 +714,17 @@ class FrictionAnalyzerProject:
             df['is_merged'] = df[state_col].apply(lambda x: 1 if 'merge' in str(x).lower() else 0)
             corr, p_val_corr = stats.pointbiserialr(df['friction_score'], df['is_merged'])
             self.results['correlation'] = {'r': corr, 'p': p_val_corr}
-            print(f"Correlation Friction <-> Merge Success: r = {corr:.3f}, p = {p_val_corr:.4f}")
+            print(f"\n   RQ4: Correlation Friction <-> Merge Success: r = {corr:.3f}, p = {p_val_corr:.4f}")
+
+            # Merge rate by agent
+            merge_rates = df.groupby('agent')['is_merged'].agg(['mean', 'count']).reset_index()
+            merge_rates.columns = ['agent', 'merge_rate', 'count']
+            self.results['merge_rates'] = merge_rates
+            print("\n   Merge rates by agent:")
+            for _, row in merge_rates.iterrows():
+                print(f"      {row['agent']}: {row['merge_rate']*100:.1f}% (n={row['count']})")
         else:
-            print("   ⚠️  Warning: No state/outcome column found for correlation analysis")
+            print("   Warning: No state/outcome column found for correlation analysis")
 
     # ==========================================
     # PHASE 4b: Category-Based Friction Analysis
@@ -910,36 +1064,39 @@ class FrictionAnalyzerProject:
     # ==========================================
     def visualize_results(self):
         """
-        Genera e salva i grafici richiesti.
+        Generate and save required plots.
+        Focus on AI agents comparison (RQ1, RQ2).
         """
         print(">>> Phase 5: Visualization...")
         df = self.analyzed_df
         plots_dir = os.path.join(self.run_dir, "plots")
 
-        # 1. Boxplot Friction by Agent
+        # 1. Boxplot Friction by AI Agent
         plt.figure(figsize=(12, 7))
-        sns.boxplot(x='agent', y='friction_score', data=df, palette="viridis")
-        plt.title("Friction Score (Negative Sentiment Probability) by Agent", fontsize=14, fontweight='bold')
-        plt.ylabel("Friction Level (0-1)", fontsize=12)
-        plt.xlabel("Agent Type", fontsize=12)
-        plt.xticks(rotation=45)
+        order = df.groupby('agent')['friction_score'].mean().sort_values(ascending=False).index
+        sns.boxplot(x='agent', y='friction_score', data=df, order=order, palette="viridis")
+        plt.title("Friction Score by AI Agent (RQ1, RQ2)", fontsize=14, fontweight='bold')
+        plt.ylabel("Friction Score (P(negative))", fontsize=12)
+        plt.xlabel("AI Agent", fontsize=12)
+        plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
         plot_path = os.path.join(plots_dir, "friction_boxplot.png")
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        print(f"   ✓ Saved: {plot_path}")
+        print(f"   Saved: {plot_path}")
         plt.close()
 
-        # 2. Sentiment Distribution
+        # 2. Sentiment Distribution by AI Agent
         plt.figure(figsize=(12, 7))
-        sns.countplot(x='sentiment_label', hue='agent', data=df, palette="Set2")
-        plt.title("Sentiment Label Distribution: Human vs AI Agents", fontsize=14, fontweight='bold')
+        sns.countplot(x='sentiment_label', hue='agent', data=df, palette="Set2",
+                     order=['negative', 'neutral', 'positive'])
+        plt.title("Sentiment Distribution Across AI Agents", fontsize=14, fontweight='bold')
         plt.xlabel("Sentiment", fontsize=12)
         plt.ylabel("Count", fontsize=12)
-        plt.legend(title="Agent", bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.legend(title="AI Agent", bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
         plot_path = os.path.join(plots_dir, "sentiment_distribution.png")
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        print(f"   ✓ Saved: {plot_path}")
+        print(f"   Saved: {plot_path}")
         plt.close()
 
         # 3. Friction Score Distribution (Histogram)
@@ -949,12 +1106,25 @@ class FrictionAnalyzerProject:
             plt.hist(agent_data, alpha=0.5, label=agent, bins=30)
         plt.xlabel("Friction Score", fontsize=12)
         plt.ylabel("Frequency", fontsize=12)
-        plt.title("Distribution of Friction Scores by Agent", fontsize=14, fontweight='bold')
+        plt.title("Distribution of Friction Scores by AI Agent", fontsize=14, fontweight='bold')
         plt.legend()
         plt.tight_layout()
         plot_path = os.path.join(plots_dir, "friction_distribution_histogram.png")
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        print(f"   ✓ Saved: {plot_path}")
+        print(f"   Saved: {plot_path}")
+        plt.close()
+
+        # 4. Violin plot for more detailed distribution view
+        plt.figure(figsize=(12, 7))
+        sns.violinplot(x='agent', y='friction_score', data=df, order=order, palette="muted")
+        plt.title("Friction Score Distribution by AI Agent (Violin Plot)", fontsize=14, fontweight='bold')
+        plt.ylabel("Friction Score", fontsize=12)
+        plt.xlabel("AI Agent", fontsize=12)
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plot_path = os.path.join(plots_dir, "friction_violin.png")
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"   Saved: {plot_path}")
         plt.close()
 
         print(f"   All visualizations saved to: {plots_dir}")
@@ -1036,6 +1206,262 @@ class FrictionAnalyzerProject:
         print(f"   All category visualizations saved.")
 
     # ==========================================
+    # PHASE 5c: Source-based Visualizations (Comments vs Reviews)
+    # ==========================================
+    def visualize_by_source(self):
+        """
+        Generate visualizations comparing comments vs reviews.
+        """
+        print(">>> Phase 5c: Source-based Visualizations (Comments vs Reviews)...")
+        plots_dir = os.path.join(self.run_dir, "plots")
+
+        # Create subfolders
+        comments_dir = os.path.join(plots_dir, "comments_only")
+        reviews_dir = os.path.join(plots_dir, "reviews_only")
+        os.makedirs(comments_dir, exist_ok=True)
+        os.makedirs(reviews_dir, exist_ok=True)
+
+        df = self.analyzed_df
+
+        # === AGGREGATED: Comments vs Reviews comparison ===
+        print("\n   Creating aggregated visualizations...")
+
+        # 1. Friction by Source Type
+        if 'source' in df.columns:
+            plt.figure(figsize=(10, 6))
+            sns.boxplot(x='source', y='friction_score', data=df, palette="Set2")
+            plt.title("Friction Score: Comments vs Reviews", fontsize=14, fontweight='bold')
+            plt.ylabel("Friction Score", fontsize=12)
+            plt.xlabel("Source Type", fontsize=12)
+            plt.tight_layout()
+            plot_path = os.path.join(plots_dir, "friction_by_source.png")
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            print(f"   Saved: {plot_path}")
+            plt.close()
+
+            # 2. Sentiment Distribution by Source
+            plt.figure(figsize=(10, 6))
+            sns.countplot(x='sentiment_label', hue='source', data=df, palette="Set2",
+                         order=['negative', 'neutral', 'positive'])
+            plt.title("Sentiment Distribution: Comments vs Reviews", fontsize=14, fontweight='bold')
+            plt.xlabel("Sentiment", fontsize=12)
+            plt.ylabel("Count", fontsize=12)
+            plt.legend(title="Source")
+            plt.tight_layout()
+            plot_path = os.path.join(plots_dir, "sentiment_by_source.png")
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            print(f"   Saved: {plot_path}")
+            plt.close()
+
+            # 3. Agent comparison by Source (grouped bar)
+            plt.figure(figsize=(14, 7))
+            source_agent = df.groupby(['agent', 'source'])['friction_score'].mean().unstack()
+            source_agent.plot(kind='bar', figsize=(14, 7), colormap='Set2')
+            plt.title("Mean Friction Score by Agent and Source", fontsize=14, fontweight='bold')
+            plt.xlabel("AI Agent", fontsize=12)
+            plt.ylabel("Mean Friction Score", fontsize=12)
+            plt.legend(title="Source")
+            plt.xticks(rotation=45, ha='right')
+            plt.tight_layout()
+            plot_path = os.path.join(plots_dir, "friction_agent_by_source.png")
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            print(f"   Saved: {plot_path}")
+            plt.close()
+
+        # === COMMENTS ONLY visualizations ===
+        print("\n   Creating comments-only visualizations...")
+        if hasattr(self, 'analyzed_comments_df') and len(self.analyzed_comments_df) > 0:
+            df_comments = self.analyzed_comments_df
+
+            # Friction by Agent (Comments only)
+            plt.figure(figsize=(12, 7))
+            if 'agent' in df_comments.columns:
+                order = df_comments.groupby('agent')['friction_score'].mean().sort_values(ascending=False).index
+                sns.boxplot(x='agent', y='friction_score', data=df_comments, order=order, palette="Blues")
+                plt.title("Friction Score by AI Agent (Comments Only)", fontsize=14, fontweight='bold')
+                plt.ylabel("Friction Score", fontsize=12)
+                plt.xlabel("AI Agent", fontsize=12)
+                plt.xticks(rotation=45, ha='right')
+                plt.tight_layout()
+                plot_path = os.path.join(comments_dir, "friction_by_agent_comments.png")
+                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+                print(f"   Saved: {plot_path}")
+                plt.close()
+
+            # Sentiment Distribution (Comments only)
+            plt.figure(figsize=(10, 6))
+            sns.countplot(x='sentiment_label', data=df_comments, palette="Blues",
+                         order=['negative', 'neutral', 'positive'])
+            plt.title("Sentiment Distribution (Comments Only)", fontsize=14, fontweight='bold')
+            plt.xlabel("Sentiment", fontsize=12)
+            plt.ylabel("Count", fontsize=12)
+            plt.tight_layout()
+            plot_path = os.path.join(comments_dir, "sentiment_distribution_comments.png")
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            print(f"   Saved: {plot_path}")
+            plt.close()
+
+        # === REVIEWS ONLY visualizations ===
+        print("\n   Creating reviews-only visualizations...")
+        if hasattr(self, 'analyzed_reviews_df') and len(self.analyzed_reviews_df) > 0:
+            df_reviews = self.analyzed_reviews_df
+
+            # Friction by Agent (Reviews only)
+            plt.figure(figsize=(12, 7))
+            if 'agent' in df_reviews.columns:
+                order = df_reviews.groupby('agent')['friction_score'].mean().sort_values(ascending=False).index
+                sns.boxplot(x='agent', y='friction_score', data=df_reviews, order=order, palette="Oranges")
+                plt.title("Friction Score by AI Agent (Reviews Only)", fontsize=14, fontweight='bold')
+                plt.ylabel("Friction Score", fontsize=12)
+                plt.xlabel("AI Agent", fontsize=12)
+                plt.xticks(rotation=45, ha='right')
+                plt.tight_layout()
+                plot_path = os.path.join(reviews_dir, "friction_by_agent_reviews.png")
+                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+                print(f"   Saved: {plot_path}")
+                plt.close()
+
+            # Sentiment Distribution (Reviews only)
+            plt.figure(figsize=(10, 6))
+            sns.countplot(x='sentiment_label', data=df_reviews, palette="Oranges",
+                         order=['negative', 'neutral', 'positive'])
+            plt.title("Sentiment Distribution (Reviews Only)", fontsize=14, fontweight='bold')
+            plt.xlabel("Sentiment", fontsize=12)
+            plt.ylabel("Count", fontsize=12)
+            plt.tight_layout()
+            plot_path = os.path.join(reviews_dir, "sentiment_distribution_reviews.png")
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            print(f"   Saved: {plot_path}")
+            plt.close()
+
+        print(f"   Source-based visualizations complete.")
+
+    # ==========================================
+    # PHASE 5d: PR Type Visualizations
+    # ==========================================
+    def visualize_by_pr_type(self):
+        """
+        Generate visualizations by PR type (fix, feat, docs, etc.)
+        """
+        print(">>> Phase 5d: PR Type Visualizations...")
+        plots_dir = os.path.join(self.run_dir, "plots")
+        pr_type_dir = os.path.join(plots_dir, "by_pr_type")
+        os.makedirs(pr_type_dir, exist_ok=True)
+
+        df = self.analyzed_df
+
+        if 'pr_type' not in df.columns:
+            print("   No PR type column found. Skipping PR type visualizations.")
+            return
+
+        # Filter out unknown types for cleaner visualizations
+        df_typed = df[df['pr_type'] != 'unknown'].copy()
+
+        if len(df_typed) == 0:
+            print("   No typed PRs found. Skipping PR type visualizations.")
+            return
+
+        print(f"   Analyzing {len(df_typed)} items with known PR types...")
+
+        # 1. Friction by PR Type (Boxplot)
+        plt.figure(figsize=(14, 7))
+        order = df_typed.groupby('pr_type')['friction_score'].mean().sort_values(ascending=False).index
+        sns.boxplot(x='pr_type', y='friction_score', data=df_typed, order=order, palette="husl")
+        plt.title("Friction Score by PR Type", fontsize=14, fontweight='bold')
+        plt.ylabel("Friction Score", fontsize=12)
+        plt.xlabel("PR Type", fontsize=12)
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plot_path = os.path.join(pr_type_dir, "friction_by_pr_type.png")
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"   Saved: {plot_path}")
+        plt.close()
+
+        # 2. Sentiment Distribution by PR Type
+        plt.figure(figsize=(14, 7))
+        sns.countplot(x='pr_type', hue='sentiment_label', data=df_typed,
+                     hue_order=['negative', 'neutral', 'positive'],
+                     order=order, palette="Set1")
+        plt.title("Sentiment Distribution by PR Type", fontsize=14, fontweight='bold')
+        plt.xlabel("PR Type", fontsize=12)
+        plt.ylabel("Count", fontsize=12)
+        plt.legend(title="Sentiment")
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plot_path = os.path.join(pr_type_dir, "sentiment_by_pr_type.png")
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"   Saved: {plot_path}")
+        plt.close()
+
+        # 3. PR Type Distribution (Pie Chart)
+        plt.figure(figsize=(10, 8))
+        type_counts = df_typed['pr_type'].value_counts()
+        colors = plt.cm.tab20(np.linspace(0, 1, len(type_counts)))
+        plt.pie(type_counts, labels=type_counts.index, autopct='%1.1f%%', colors=colors, startangle=90)
+        plt.title("Distribution of PR Types", fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plot_path = os.path.join(pr_type_dir, "pr_type_distribution.png")
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"   Saved: {plot_path}")
+        plt.close()
+
+        # 4. Heatmap: PR Type vs Agent
+        plt.figure(figsize=(14, 8))
+        type_agent = df_typed.groupby(['pr_type', 'agent'])['friction_score'].mean().unstack()
+        sns.heatmap(type_agent, annot=True, fmt='.3f', cmap='YlOrRd', cbar_kws={'label': 'Mean Friction'})
+        plt.title("Mean Friction Score: PR Type vs AI Agent", fontsize=14, fontweight='bold')
+        plt.xlabel("AI Agent", fontsize=12)
+        plt.ylabel("PR Type", fontsize=12)
+        plt.tight_layout()
+        plot_path = os.path.join(pr_type_dir, "friction_heatmap_type_agent.png")
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"   Saved: {plot_path}")
+        plt.close()
+
+        # 5. Negative Sentiment Rate by PR Type
+        plt.figure(figsize=(12, 6))
+        neg_rate = df_typed.groupby('pr_type')['is_negative'].mean().sort_values(ascending=False)
+        neg_rate.plot(kind='bar', color='coral', edgecolor='black')
+        plt.title("Negative Sentiment Rate by PR Type", fontsize=14, fontweight='bold')
+        plt.xlabel("PR Type", fontsize=12)
+        plt.ylabel("Proportion of Negative Sentiment", fontsize=12)
+        plt.xticks(rotation=45, ha='right')
+        plt.ylim(0, 1)
+        plt.axhline(y=df_typed['is_negative'].mean(), color='red', linestyle='--', label='Overall Mean')
+        plt.legend()
+        plt.tight_layout()
+        plot_path = os.path.join(pr_type_dir, "negative_rate_by_pr_type.png")
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"   Saved: {plot_path}")
+        plt.close()
+
+        # 6. PR Type by Source (Comments vs Reviews)
+        if 'source' in df_typed.columns:
+            plt.figure(figsize=(14, 7))
+            type_source = df_typed.groupby(['pr_type', 'source'])['friction_score'].mean().unstack()
+            type_source.plot(kind='bar', figsize=(14, 7), colormap='Set2')
+            plt.title("Mean Friction by PR Type and Source", fontsize=14, fontweight='bold')
+            plt.xlabel("PR Type", fontsize=12)
+            plt.ylabel("Mean Friction Score", fontsize=12)
+            plt.legend(title="Source")
+            plt.xticks(rotation=45, ha='right')
+            plt.tight_layout()
+            plot_path = os.path.join(pr_type_dir, "friction_type_by_source.png")
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            print(f"   Saved: {plot_path}")
+            plt.close()
+
+        # Store PR type statistics
+        pr_type_stats = df_typed.groupby('pr_type').agg({
+            'friction_score': ['mean', 'std', 'count'],
+            'is_negative': 'mean'
+        }).round(4)
+        pr_type_stats.columns = ['mean_friction', 'std_friction', 'count', 'negative_rate']
+        self.results['pr_type_stats'] = pr_type_stats.reset_index()
+
+        print(f"   PR type visualizations complete.")
+
+    # ==========================================
     # PHASE 6: Save Results
     # ==========================================
     def save_results(self):
@@ -1046,10 +1472,22 @@ class FrictionAnalyzerProject:
         data_dir = os.path.join(self.run_dir, "data")
         models_dir = os.path.join(self.run_dir, "models")
 
-        # 1. Save analyzed comments dataset
-        analyzed_path = os.path.join(data_dir, "analyzed_comments.csv")
+        # 1. Save analyzed combined dataset
+        analyzed_path = os.path.join(data_dir, "analyzed_combined.csv")
         self.analyzed_df.to_csv(analyzed_path, index=False)
-        print(f"   ✓ Saved analyzed comments: {analyzed_path}")
+        print(f"   ✓ Saved analyzed combined: {analyzed_path}")
+
+        # 1b. Save analyzed comments separately
+        if hasattr(self, 'analyzed_comments_df'):
+            comments_path = os.path.join(data_dir, "analyzed_comments_only.csv")
+            self.analyzed_comments_df.to_csv(comments_path, index=False)
+            print(f"   ✓ Saved analyzed comments: {comments_path}")
+
+        # 1c. Save analyzed reviews separately
+        if hasattr(self, 'analyzed_reviews_df'):
+            reviews_path = os.path.join(data_dir, "analyzed_reviews_only.csv")
+            self.analyzed_reviews_df.to_csv(reviews_path, index=False)
+            print(f"   ✓ Saved analyzed reviews: {reviews_path}")
 
         # 2. Save friction statistics by agent
         if 'friction_stats' in self.results:
@@ -1095,16 +1533,16 @@ class FrictionAnalyzerProject:
 
         # 4. Save statistical test results
         stats_summary = {
-            "mann_whitney_stat": self.results.get('mann_whitney', {}).get('stat', None),
-            "mann_whitney_pvalue": self.results.get('mann_whitney', {}).get('p_value', None),
+            "kruskal_wallis_agents_stat": self.results.get('kruskal_wallis_agents', {}).get('stat', None),
+            "kruskal_wallis_agents_pvalue": self.results.get('kruskal_wallis_agents', {}).get('p_value', None),
             "pointbiserial_correlation": self.results.get('correlation', {}).get('r', None),
             "pointbiserial_pvalue": self.results.get('correlation', {}).get('p', None),
             "time_to_merge_correlation": self.results.get('time_to_merge_correlation', {}).get('r', None),
             "time_to_merge_pvalue": self.results.get('time_to_merge_correlation', {}).get('p', None),
             "iterations_correlation": self.results.get('iterations_correlation', {}).get('r', None),
             "iterations_pvalue": self.results.get('iterations_correlation', {}).get('p', None),
-            "kruskal_wallis_stat": self.results.get('kruskal_wallis_categories', {}).get('stat', None),
-            "kruskal_wallis_pvalue": self.results.get('kruskal_wallis_categories', {}).get('p_value', None),
+            "kruskal_wallis_categories_stat": self.results.get('kruskal_wallis_categories', {}).get('stat', None),
+            "kruskal_wallis_categories_pvalue": self.results.get('kruskal_wallis_categories', {}).get('p_value', None),
             "chi2_category_agent": self.results.get('chi2_category_agent', {}).get('chi2', None),
             "chi2_category_agent_pvalue": self.results.get('chi2_category_agent', {}).get('p_value', None),
         }
@@ -1131,35 +1569,43 @@ class FrictionAnalyzerProject:
         with open(summary_path, 'w') as f:
             f.write("=" * 70 + "\n")
             f.write("FRICTION ANALYSIS - SUMMARY REPORT\n")
+            f.write("AI Agents Code Review Friction Analysis\n")
             f.write("=" * 70 + "\n\n")
             f.write(f"Timestamp: {self.timestamp}\n")
-            f.write(f"Total Comments Analyzed: {len(self.analyzed_df)}\n\n")
+            f.write(f"Total Comments Analyzed: {len(self.analyzed_df)}\n")
+            f.write(f"Filter: Repositories with 100+ GitHub stars\n\n")
 
-            f.write("Agent Distribution:\n")
+            f.write("AI Agent Distribution:\n")
             for agent, count in self.analyzed_df['agent'].value_counts().items():
                 f.write(f"  - {agent}: {count}\n")
 
             f.write("\nFriction Statistics (Mean Friction Score):\n")
             if 'friction_stats' in self.results:
                 for _, row in self.results['friction_stats'].iterrows():
-                    f.write(f"  - {row['agent']}: {row['mean']:.4f} (n={row['count']})\n")
+                    f.write(f"  - {row['agent']}: {row['mean']:.4f} (n={int(row['count'])})\n")
 
             f.write("\nStatistical Tests:\n")
-            if 'mann_whitney' in self.results:
-                f.write(f"  Mann-Whitney U Test (Human vs AI):\n")
-                f.write(f"    Statistic: {self.results['mann_whitney']['stat']:.2f}\n")
-                f.write(f"    P-value: {self.results['mann_whitney']['p_value']:.4f}\n")
-                f.write(f"    Significant: {'Yes' if self.results['mann_whitney']['p_value'] < 0.05 else 'No'}\n")
+            if 'kruskal_wallis_agents' in self.results:
+                f.write(f"  Kruskal-Wallis Test (AI Agents Comparison):\n")
+                f.write(f"    H-statistic: {self.results['kruskal_wallis_agents']['stat']:.2f}\n")
+                f.write(f"    P-value: {self.results['kruskal_wallis_agents']['p_value']:.4f}\n")
+                sig = 'Yes' if self.results['kruskal_wallis_agents']['p_value'] < 0.05 else 'No'
+                f.write(f"    Significant: {sig}\n")
 
             if 'correlation' in self.results:
-                f.write(f"  Point-Biserial Correlation (Friction vs Merge):\n")
+                f.write(f"\n  Point-Biserial Correlation (Friction vs Merge):\n")
                 f.write(f"    Correlation: {self.results['correlation']['r']:.4f}\n")
                 f.write(f"    P-value: {self.results['correlation']['p']:.4f}\n")
 
+            if 'kruskal_wallis_categories' in self.results:
+                f.write(f"\n  Kruskal-Wallis Test (Friction Categories):\n")
+                f.write(f"    H-statistic: {self.results['kruskal_wallis_categories']['stat']:.2f}\n")
+                f.write(f"    P-value: {self.results['kruskal_wallis_categories']['p_value']:.4f}\n")
+
             f.write("\n" + "=" * 70 + "\n")
 
-        print(f"   ✓ Saved summary report: {summary_path}")
-        print(f"\n✅ All results saved to: {self.run_dir}")
+        print(f"   Saved summary report: {summary_path}")
+        print(f"\nAll results saved to: {self.run_dir}")
 
     def run_full_pipeline(self):
         """
@@ -1200,6 +1646,8 @@ class FrictionAnalyzerProject:
         # Phase 5 & 6: Visualization and saving
         self.visualize_results()
         self.visualize_categories()  # Category visualizations
+        self.visualize_by_source()  # Comments vs Reviews visualizations
+        self.visualize_by_pr_type()  # PR Type visualizations
         self.save_results()
 
         print("\n" + "=" * 70)

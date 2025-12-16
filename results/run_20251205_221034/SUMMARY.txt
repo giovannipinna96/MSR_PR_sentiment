@@ -1,0 +1,33 @@
+======================================================================
+FRICTION ANALYSIS - SUMMARY REPORT
+======================================================================
+
+Timestamp: 20251205_221034
+Total Comments Analyzed: 21680
+
+Agent Distribution:
+  - Copilot: 14655
+  - Devin: 3802
+  - OpenAI_Codex: 2082
+  - Cursor: 663
+  - Claude_Code: 450
+  - Human: 28
+
+Friction Statistics (Mean Friction Score):
+  - Claude_Code: 0.2371 (n=450)
+  - Copilot: 0.1907 (n=14655)
+  - Cursor: 0.2521 (n=663)
+  - Devin: 0.2480 (n=3802)
+  - Human: 0.1697 (n=28)
+  - OpenAI_Codex: 0.2089 (n=2082)
+
+Statistical Tests:
+  Mann-Whitney U Test (Human vs AI):
+    Statistic: 272966.00
+    P-value: 0.3620
+    Significant: No
+  Point-Biserial Correlation (Friction vs Merge):
+    Correlation: nan
+    P-value: nan
+
+======================================================================

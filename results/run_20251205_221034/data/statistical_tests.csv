@@ -1,0 +1,2 @@
+mann_whitney_stat,mann_whitney_pvalue,pointbiserial_correlation,pointbiserial_pvalue,time_to_merge_correlation,time_to_merge_pvalue,iterations_correlation,iterations_pvalue,kruskal_wallis_stat,kruskal_wallis_pvalue,chi2_category_agent,chi2_category_agent_pvalue
+272966.0,0.36202369987071437,,,0.07231957212448119,0.000336526805533573,0.09886562456391977,2.102111176677263e-09,13.520744092971952,0.008992703350503397,67.00270808006181,5.576470488812904e-07
