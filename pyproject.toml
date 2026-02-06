@@ -7,13 +7,24 @@ requires-python = ">=3.10"
 dependencies = [
     "bertopic>=0.17.3",
     "datasets>=4.4.1",
+    "imbalanced-learn>=0.12.0", # SMOTE for SentiCR class balancing
     "matplotlib>=3.10.7",
+    "nltk>=3.8.0", # For SentiCR text processing
     "numpy>=2.2.6",
+    "openpyxl>=3.1.0", # For reading SentiCR oracle.xlsx
     "pandas>=2.3.3",
     "scipy>=1.15.3",
+    "scikit-learn>=1.5.0", # For regression and preprocessing
+    "scikit-posthocs>=0.9.0", # Dunn's test for proper post-hoc after Kruskal-Wallis
     "seaborn>=0.13.2",
     "sentence-transformers>=5.1.2",
+    "statsmodels>=0.14.0", # Multiple comparison corrections, OLS regression, power analysis
     "torch>=2.9.1",
     "transformers>=4.57.1",
     "umap-learn>=0.5.9.post2",
+    "fast-langdetect>=1.0.0",
+    "protobuf>=6.33.5",
+    "sentencepiece>=0.2.1",
+    "fugashi>=1.5.2",
+    "unidic-lite>=1.0.8",
 ]

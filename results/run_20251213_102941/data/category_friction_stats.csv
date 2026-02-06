@@ -1,0 +1,6 @@
+friction_category,mean_friction,std_friction,count
+Code Style,0.6909,0.1244,2199
+Documentation,0.6578,0.1124,135
+Logic,0.6723,0.1229,253
+Security,0.6938,0.1174,726
+Testing,0.7038,0.1317,685

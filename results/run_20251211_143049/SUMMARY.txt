@@ -1,0 +1,38 @@
+======================================================================
+FRICTION ANALYSIS - SUMMARY REPORT
+AI Agents Code Review Friction Analysis
+======================================================================
+
+Timestamp: 20251211_143049
+Total Comments Analyzed: 21652
+Filter: Repositories with 100+ GitHub stars
+
+AI Agent Distribution:
+  - Copilot: 14655
+  - Devin: 3802
+  - OpenAI_Codex: 2082
+  - Cursor: 663
+  - Claude_Code: 450
+
+Friction Statistics (Mean Friction Score):
+  - Claude_Code: 0.2371 (n=450)
+  - Copilot: 0.1907 (n=14655)
+  - Cursor: 0.2521 (n=663)
+  - Devin: 0.2480 (n=3802)
+  - OpenAI_Codex: 0.2089 (n=2082)
+
+Statistical Tests:
+  Kruskal-Wallis Test (AI Agents Comparison):
+    H-statistic: 264.60
+    P-value: 0.0000
+    Significant: Yes
+
+  Point-Biserial Correlation (Friction vs Merge):
+    Correlation: nan
+    P-value: nan
+
+  Kruskal-Wallis Test (Friction Categories):
+    H-statistic: 13.31
+    P-value: 0.0099
+
+======================================================================
