@@ -1,0 +1,2 @@
+test,eta_squared,cohens_f,n_groups,n_total,achieved_power,alpha
+Kruskal-Wallis (ANOVA approximation),0.05055591828720749,0.23075509865432792,5,11017,1.0,0.05
