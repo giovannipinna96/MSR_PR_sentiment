@@ -1,4 +1,0 @@
-model,n_negative,n_positive,n_neutral,mean_neg_score
-twitter_roberta,1045,441,3511,0.23452836899009488
-cardiffnlp_roberta,1000,414,3583,0.2680101430836423
-senticr,623,0,4374,0.2689371985926353

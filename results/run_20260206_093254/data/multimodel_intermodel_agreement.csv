@@ -1,4 +1,0 @@
-model_pair,cohens_kappa,interpretation,agreement_pct
-twitter_roberta vs cardiffnlp_roberta,0.6826099872412346,substantial,85.81148689213528
-twitter_roberta vs senticr,0.10563342877483028,slight/poor,67.90074044426656
-cardiffnlp_roberta vs senticr,0.11407317169045139,slight/poor,69.22153291975185

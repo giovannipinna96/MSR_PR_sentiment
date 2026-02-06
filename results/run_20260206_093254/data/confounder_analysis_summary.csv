@@ -1,2 +1,0 @@
-r_squared_unadjusted,r_squared_adjusted,r_squared_adj_adjusted,n_confounders,reference_agent,n_observations
-0.03805336983653351,0.06575825712598427,0.06473945478915333,3,OpenAI_Codex,11017

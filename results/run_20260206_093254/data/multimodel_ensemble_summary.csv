@@ -1,2 +1,0 @@
-n_samples,models_used,n_negative,n_positive,n_neutral,negative_rate,mean_confidence,unanimous_rate
-4997,"twitter_roberta, cardiffnlp_roberta, senticr",870,326,3801,0.17410446267760657,0.8706557267693948,0.617370422253352
