@@ -720,7 +720,8 @@ class FrictionAnalyzerProject:
         # Select common columns for combined dataset
         # Include merged_at for determining merge status in outcome analysis
         # Note: merged_at doesn't get _pr suffix because there's no collision with comments table
-        common_cols = ['clean_body', 'agent', 'source', 'pr_type', 'created_at', 'closed_at', 'state', 'detected_lang', 'merged_at']
+        # Include repo_path for repository-level analysis
+        common_cols = ['clean_body', 'agent', 'source', 'pr_type', 'created_at', 'closed_at', 'state', 'detected_lang', 'merged_at', 'repo_path']
 
         # Add id columns for tracking
         if 'id_pr' in merged_comments.columns:
@@ -1413,8 +1414,15 @@ class FrictionAnalyzerProject:
         df_sample['ensemble_label'] = ensemble_labels
         df_sample['ensemble_confidence'] = ensemble_confidence
 
-        # Store for later use
+        # Add individual model labels and scores for disagreement analysis
+        for model_name, preds in model_predictions.items():
+            if preds is not None:
+                df_sample[f'{model_name}_label'] = preds['labels']
+                df_sample[f'{model_name}_score'] = preds['neg_scores']
+
+        # Store for later use (as multimodel_df for compatibility)
         self.multimodel_sample_df = df_sample
+        self.multimodel_df = df_sample  # Alias for backward compatibility
 
         print("\n   ✓ Multi-model sentiment analysis complete")
         print(f"   Mean inter-model κ: {np.mean([r['cohens_kappa'] for r in agreement_results]):.3f}")
@@ -2606,6 +2614,25 @@ class FrictionAnalyzerProject:
                         alternative='two-sided'
                     )
 
+                    # FIX: Handle NaN values from statsmodels (overflow with large n + moderate effect)
+                    calculation_method = "statsmodels"
+                    if np.isnan(achieved_power):
+                        from scipy.stats import nct
+                        # Manual power calculation using non-central t-distribution
+                        df = n1 + n2 - 2
+                        # Non-centrality parameter for two-sample t-test
+                        ncp = abs(cohens_d) * np.sqrt((n1 * n2) / (n1 + n2))
+                        # Critical t-value for two-tailed test
+                        critical_t = stats.t.ppf(1 - 0.05/2, df)
+                        # Power = P(reject H0 | H1 true) using non-central t
+                        achieved_power = 1 - nct.cdf(critical_t, df, ncp) + nct.cdf(-critical_t, df, ncp)
+                        calculation_method = "scipy_nct"
+
+                        # If still problematic (very large ncp), cap at 0.9999
+                        if np.isnan(achieved_power) or achieved_power > 0.9999:
+                            achieved_power = 0.9999
+                            calculation_method = "capped_at_0.9999"
+
                     power_status = "✓" if achieved_power >= 0.80 else "⚠️"
                     print(f"   {pair:<30} {n1:<8} {n2:<8} {cliff_d:<10.3f} {cohens_d:<10.3f} {achieved_power:<10.3f} {power_status}")
 
@@ -2616,7 +2643,8 @@ class FrictionAnalyzerProject:
                         'cliff_delta': cliff_d,
                         'cohens_d': cohens_d,
                         'achieved_power': achieved_power,
-                        'adequate_power': achieved_power >= 0.80
+                        'adequate_power': achieved_power >= 0.80,
+                        'calculation_method': calculation_method
                     })
 
                 except Exception as e:
@@ -3676,6 +3704,706 @@ class FrictionAnalyzerProject:
         print(f"   PR type visualizations and statistical analysis complete.")
 
     # ==========================================
+    # PHASE 5.5: Additional Analyses (Construct Validity & Ecological Validity)
+    # ==========================================
+
+    def generate_validation_sample(self, n_samples=300):
+        """
+        Genera un campione stratificato per validazione manuale.
+        Stratificato per: agent, sentiment_label
+        Output: CSV con colonne per annotazione manuale.
+        """
+        print("\n>>> Generating Manual Validation Sample...")
+
+        if not hasattr(self, 'analyzed_df') or self.analyzed_df is None:
+            print("   ⚠️  No analyzed data available. Run sentiment analysis first.")
+            return None
+
+        df = self.analyzed_df.copy()
+
+        # Add friction bins for stratification
+        df['friction_bin'] = pd.cut(
+            df['friction_score'],
+            bins=[0, 0.3, 0.5, 0.7, 1.0],
+            labels=['low', 'medium', 'high', 'very_high'],
+            include_lowest=True
+        )
+
+        # Stratified sampling by agent and sentiment_label
+        # Calculate samples per stratum (15 strata = 5 agents × 3 sentiments)
+        samples_per_stratum = max(1, n_samples // 15)
+
+        sample = df.groupby(['agent', 'sentiment_label'], group_keys=False).apply(
+            lambda x: x.sample(n=min(len(x), samples_per_stratum), random_state=42)
+        )
+
+        # Add annotation columns
+        sample['annotator1_label'] = ''
+        sample['annotator2_label'] = ''
+        sample['annotator1_notes'] = ''
+        sample['annotator2_notes'] = ''
+
+        # Select columns for export
+        cols_export = [
+            'clean_body', 'agent', 'source', 'pr_type',
+            'friction_score', 'sentiment_label', 'friction_bin',
+            'annotator1_label', 'annotator2_label',
+            'annotator1_notes', 'annotator2_notes'
+        ]
+        cols_available = [c for c in cols_export if c in sample.columns]
+
+        # Save
+        output_path = os.path.join(self.run_dir, "data", "validation_sample.csv")
+        sample[cols_available].to_csv(output_path, index=False)
+
+        print(f"   ✓ Generated validation sample: {len(sample)} comments")
+        print(f"   ✓ Saved to: {output_path}")
+        print(f"   Distribution by agent: {sample['agent'].value_counts().to_dict()}")
+        print(f"   Distribution by sentiment: {sample['sentiment_label'].value_counts().to_dict()}")
+
+        return sample
+
+    def analyze_model_disagreements(self):
+        """
+        Analizza dove i modelli di sentiment discordano.
+        Output: confusion matrix, esempi di disaccordo, pattern analysis.
+        """
+        print("\n>>> Analyzing Model Disagreements...")
+
+        if not hasattr(self, 'multimodel_df') or self.multimodel_df is None:
+            print("   ⚠️  No multimodel data available. Run analyze_sentiment_multimodel() first.")
+            return
+
+        df = self.multimodel_df.copy()
+
+        # Check required columns
+        required_cols = ['twitter_roberta_label', 'senticr_label', 'clean_body']
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            print(f"   ⚠️  Missing columns: {missing}. Cannot analyze disagreements.")
+            return
+
+        # Identify disagreements
+        disagreements = df[df['twitter_roberta_label'] != df['senticr_label']].copy()
+        agreements = df[df['twitter_roberta_label'] == df['senticr_label']].copy()
+
+        print(f"   Total comments analyzed: {len(df)}")
+        print(f"   Agreements: {len(agreements)} ({100*len(agreements)/len(df):.1f}%)")
+        print(f"   Disagreements: {len(disagreements)} ({100*len(disagreements)/len(df):.1f}%)")
+
+        # Create output directory for disagreement analysis
+        disagree_dir = os.path.join(self.run_dir, "data", "model_disagreements")
+        os.makedirs(disagree_dir, exist_ok=True)
+
+        # Sample disagreement examples by type
+        print("\n   Disagreement examples by type:")
+        for (tr_label, sc_label), group in disagreements.groupby(['twitter_roberta_label', 'senticr_label']):
+            count = len(group)
+            print(f"      {tr_label} (RoBERTa) vs {sc_label} (SentiCR): {count} cases")
+
+            # Save top 10 examples
+            examples = group.head(10)[['clean_body', 'friction_score', 'twitter_roberta_label', 'senticr_label']]
+            if 'twitter_roberta_score' in group.columns:
+                examples['roberta_confidence'] = group.head(10)['twitter_roberta_score']
+            if 'senticr_score' in group.columns:
+                examples['senticr_confidence'] = group.head(10)['senticr_score']
+
+            examples.to_csv(
+                os.path.join(disagree_dir, f"disagreement_{tr_label}_vs_{sc_label}.csv"),
+                index=False
+            )
+
+        # Confusion matrix
+        from sklearn.metrics import confusion_matrix, classification_report
+
+        labels = ['negative', 'neutral', 'positive']
+        # Filter to only include valid labels
+        valid_mask = df['twitter_roberta_label'].isin(labels) & df['senticr_label'].isin(labels)
+        df_valid = df[valid_mask]
+
+        cm = confusion_matrix(
+            df_valid['twitter_roberta_label'],
+            df_valid['senticr_label'],
+            labels=labels
+        )
+
+        # Save confusion matrix
+        cm_df = pd.DataFrame(cm, index=[f'RoBERTa_{l}' for l in labels], columns=[f'SentiCR_{l}' for l in labels])
+        cm_df.to_csv(os.path.join(disagree_dir, "confusion_matrix.csv"))
+
+        # Classification report (treating RoBERTa as "ground truth" for comparison)
+        report = classification_report(
+            df_valid['twitter_roberta_label'],
+            df_valid['senticr_label'],
+            labels=labels,
+            output_dict=True
+        )
+        pd.DataFrame(report).transpose().to_csv(
+            os.path.join(disagree_dir, "classification_report_senticr_vs_roberta.csv")
+        )
+
+        # Visualize confusion matrix
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                    xticklabels=['neg', 'neu', 'pos'],
+                    yticklabels=['neg', 'neu', 'pos'])
+        plt.xlabel('SentiCR Prediction')
+        plt.ylabel('Twitter RoBERTa Prediction')
+        plt.title('Confusion Matrix: RoBERTa vs SentiCR')
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.run_dir, "plots", "model_confusion_matrix.png"), dpi=150)
+        plt.close()
+
+        print(f"\n   ✓ Saved confusion matrix and examples to: {disagree_dir}")
+        print(f"   ✓ Saved confusion matrix plot to: plots/model_confusion_matrix.png")
+
+        # Store results
+        self.results['model_disagreement_analysis'] = {
+            'total_analyzed': len(df),
+            'agreements': len(agreements),
+            'disagreements': len(disagreements),
+            'agreement_rate': len(agreements) / len(df),
+            'confusion_matrix': cm.tolist()
+        }
+
+    def analyze_repository_distribution(self):
+        """
+        Analizza la distribuzione dei repository per agent.
+        Verifica il confounding repository-level.
+        """
+        print("\n>>> Analyzing Repository Distribution...")
+
+        if not hasattr(self, 'analyzed_df') or self.analyzed_df is None:
+            print("   ⚠️  No analyzed data available.")
+            return
+
+        df = self.analyzed_df.copy()
+
+        # Check if repo_path is available
+        if 'repo_path' not in df.columns:
+            # Try to get it from dataset
+            if hasattr(self, 'dataset') and 'repo_path' in self.dataset.columns:
+                # Merge
+                if 'id_pr' in df.columns and 'id_pr' in self.dataset.columns:
+                    repo_info = self.dataset[['id_pr', 'repo_path']].drop_duplicates()
+                    df = df.merge(repo_info, on='id_pr', how='left')
+                    self.analyzed_df = df  # Update
+                    print("   Merged repo_path from dataset")
+                else:
+                    print("   ⚠️  Cannot merge repo_path: id_pr column missing")
+                    return
+            else:
+                print("   ⚠️  repo_path not available in analyzed data or dataset")
+                return
+
+        # Filter to rows with valid repo_path
+        df_valid = df[df['repo_path'].notna()]
+        print(f"   Comments with valid repo_path: {len(df_valid)} / {len(df)}")
+
+        # Statistics per agent
+        repo_stats = []
+        for agent in df_valid['agent'].unique():
+            agent_df = df_valid[df_valid['agent'] == agent]
+            unique_repos = agent_df['repo_path'].nunique()
+            total_comments = len(agent_df)
+            comments_per_repo = total_comments / unique_repos if unique_repos > 0 else 0
+
+            # Top repository for this agent
+            top_repo = agent_df['repo_path'].value_counts().index[0] if unique_repos > 0 else None
+            top_repo_count = agent_df['repo_path'].value_counts().iloc[0] if unique_repos > 0 else 0
+            top_repo_pct = top_repo_count / total_comments * 100 if total_comments > 0 else 0
+
+            repo_stats.append({
+                'agent': agent,
+                'unique_repositories': unique_repos,
+                'total_comments': total_comments,
+                'comments_per_repo': round(comments_per_repo, 2),
+                'top_repo': top_repo,
+                'top_repo_count': top_repo_count,
+                'top_repo_pct': round(top_repo_pct, 2)
+            })
+
+        repo_stats_df = pd.DataFrame(repo_stats)
+        output_path = os.path.join(self.run_dir, "data", "repository_distribution_by_agent.csv")
+        repo_stats_df.to_csv(output_path, index=False)
+
+        print("\n   Repository distribution by agent:")
+        print(repo_stats_df.to_string(index=False))
+        print(f"\n   ✓ Saved to: {output_path}")
+
+        # Repository overlap analysis
+        print("\n   Repository overlap between agents:")
+        agents = df_valid['agent'].unique()
+        for i, agent1 in enumerate(agents):
+            for agent2 in agents[i+1:]:
+                repos1 = set(df_valid[df_valid['agent'] == agent1]['repo_path'].unique())
+                repos2 = set(df_valid[df_valid['agent'] == agent2]['repo_path'].unique())
+                overlap = repos1 & repos2
+                union = repos1 | repos2
+                jaccard = len(overlap) / len(union) if len(union) > 0 else 0
+                print(f"      {agent1} vs {agent2}: {len(overlap)} shared repos (Jaccard={jaccard:.3f})")
+
+        self.results['repository_distribution'] = repo_stats_df.to_dict('records')
+        return repo_stats_df
+
+    def analyze_mixed_effects(self):
+        """
+        Mixed-effects model con repository come random effect.
+        Controlla il clustering a livello di repository.
+        """
+        print("\n>>> Analyzing Mixed-Effects Model (Repository as Random Effect)...")
+
+        if not hasattr(self, 'analyzed_df') or self.analyzed_df is None:
+            print("   ⚠️  No analyzed data available.")
+            return
+
+        df = self.analyzed_df.copy()
+
+        # Check if repo_path is available
+        if 'repo_path' not in df.columns:
+            print("   ⚠️  repo_path not available. Run analyze_repository_distribution() first.")
+            return
+
+        # Filter to valid data
+        df_valid = df[df['repo_path'].notna() & df['friction_score'].notna()].copy()
+
+        # Need at least 2 observations per repo for random effects
+        repo_counts = df_valid['repo_path'].value_counts()
+        valid_repos = repo_counts[repo_counts >= 2].index
+        df_valid = df_valid[df_valid['repo_path'].isin(valid_repos)]
+
+        print(f"   Comments for mixed-effects: {len(df_valid)} (repos with ≥2 comments)")
+
+        if len(df_valid) < 100:
+            print("   ⚠️  Insufficient data for mixed-effects model.")
+            return
+
+        try:
+            import statsmodels.formula.api as smf
+
+            # Reference category: Claude_Code (alphabetically first)
+            # Formula: friction ~ agent + (1|repo)
+            agents = df_valid['agent'].unique().tolist()
+            ref_agent = 'Claude_Code' if 'Claude_Code' in agents else agents[0]
+
+            # Create dummy variables explicitly
+            for agent in agents:
+                if agent != ref_agent:
+                    df_valid[f'agent_{agent}'] = (df_valid['agent'] == agent).astype(int)
+
+            # Build formula
+            agent_vars = [f'agent_{a}' for a in agents if a != ref_agent]
+            formula = f"friction_score ~ {' + '.join(agent_vars)}"
+
+            print(f"   Formula: {formula}")
+            print(f"   Reference agent: {ref_agent}")
+
+            # Fit mixed-effects model
+            model = smf.mixedlm(formula, df_valid, groups=df_valid['repo_path'])
+            result = model.fit(method='powell')  # Powell is more robust
+
+            # Save full results
+            output_path = os.path.join(self.run_dir, "data", "mixed_effects_model.txt")
+            with open(output_path, 'w') as f:
+                f.write(result.summary().as_text())
+            print(f"\n   ✓ Saved full model summary to: {output_path}")
+
+            # Extract coefficients
+            coeffs = pd.DataFrame({
+                'variable': result.params.index,
+                'coefficient': result.params.values,
+                'std_err': result.bse.values,
+                'z_value': result.tvalues.values,
+                'p_value': result.pvalues.values
+            })
+            coeffs_path = os.path.join(self.run_dir, "data", "mixed_effects_coefficients.csv")
+            coeffs.to_csv(coeffs_path, index=False)
+            print(f"   ✓ Saved coefficients to: {coeffs_path}")
+
+            # Calculate ICC (Intraclass Correlation Coefficient)
+            var_repo = result.cov_re.iloc[0, 0]  # Random effect variance
+            var_resid = result.scale  # Residual variance
+            icc = var_repo / (var_repo + var_resid) if (var_repo + var_resid) > 0 else 0
+
+            print(f"\n   Mixed-Effects Model Results:")
+            print(f"   ICC (repository clustering): {icc:.4f}")
+            print(f"   Interpretation: {icc*100:.1f}% of friction variance is explained by repository")
+
+            if icc > 0.05:
+                print("   ⚠️  Moderate-to-high ICC suggests repository-level clustering is present")
+            else:
+                print("   ✓ Low ICC suggests minimal repository-level clustering")
+
+            print("\n   Agent coefficients (relative to {}):")
+            for _, row in coeffs[coeffs['variable'].str.startswith('agent_')].iterrows():
+                agent_name = row['variable'].replace('agent_', '')
+                sig = '***' if row['p_value'] < 0.001 else ('**' if row['p_value'] < 0.01 else ('*' if row['p_value'] < 0.05 else ''))
+                print(f"      {agent_name}: {row['coefficient']:.4f} (p={row['p_value']:.4f}) {sig}")
+
+            self.results['mixed_effects'] = {
+                'icc': icc,
+                'n_comments': len(df_valid),
+                'n_repos': df_valid['repo_path'].nunique(),
+                'var_repo': var_repo,
+                'var_resid': var_resid,
+                'coefficients': coeffs.to_dict('records')
+            }
+
+        except Exception as e:
+            print(f"   ⚠️  Mixed-effects model failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def analyze_with_matching(self):
+        """
+        Confronto agent usando exact matching su repo + pr_type.
+        Riduce confounding repository-level.
+        """
+        print("\n>>> Analyzing with Exact Matching (Same Repo + PR Type)...")
+
+        if not hasattr(self, 'analyzed_df') or self.analyzed_df is None:
+            print("   ⚠️  No analyzed data available.")
+            return
+
+        df = self.analyzed_df.copy()
+
+        # Check required columns
+        if 'repo_path' not in df.columns:
+            print("   ⚠️  repo_path not available. Run analyze_repository_distribution() first.")
+            return
+
+        df_valid = df[df['repo_path'].notna() & df['pr_type'].notna()].copy()
+
+        # Pairs to compare (Copilot as baseline since it has most samples)
+        pairs_to_match = [
+            ('Copilot', 'Claude_Code'),
+            ('Copilot', 'Devin'),
+            ('Copilot', 'OpenAI_Codex'),
+            ('Copilot', 'Cursor')
+        ]
+
+        matched_results = []
+
+        for agent1, agent2 in pairs_to_match:
+            df1 = df_valid[df_valid['agent'] == agent1]
+            df2 = df_valid[df_valid['agent'] == agent2]
+
+            # Exact match on repo_path + pr_type
+            matched_pairs = df1.merge(
+                df2,
+                on=['repo_path', 'pr_type'],
+                suffixes=('_1', '_2')
+            )
+
+            if len(matched_pairs) >= 10:
+                # Calculate statistics
+                mean_diff = matched_pairs['friction_score_1'].mean() - matched_pairs['friction_score_2'].mean()
+
+                # Wilcoxon signed-rank test (paired)
+                try:
+                    stat, p = stats.wilcoxon(
+                        matched_pairs['friction_score_1'],
+                        matched_pairs['friction_score_2']
+                    )
+                except Exception:
+                    stat, p = np.nan, np.nan
+
+                matched_results.append({
+                    'pair': f'{agent1} vs {agent2}',
+                    'agent1': agent1,
+                    'agent2': agent2,
+                    'n_matched': len(matched_pairs),
+                    'mean_friction_agent1': matched_pairs['friction_score_1'].mean(),
+                    'mean_friction_agent2': matched_pairs['friction_score_2'].mean(),
+                    'mean_diff': mean_diff,
+                    'wilcoxon_stat': stat,
+                    'p_value': p,
+                    'significant_005': p < 0.05 if not np.isnan(p) else False
+                })
+
+                print(f"   {agent1} vs {agent2}: {len(matched_pairs)} matched pairs, diff={mean_diff:.4f}, p={p:.4f}")
+            else:
+                print(f"   {agent1} vs {agent2}: insufficient matches ({len(matched_pairs)} < 10)")
+
+        if matched_results:
+            results_df = pd.DataFrame(matched_results)
+            output_path = os.path.join(self.run_dir, "data", "matched_comparison.csv")
+            results_df.to_csv(output_path, index=False)
+            print(f"\n   ✓ Saved matched comparison results to: {output_path}")
+
+            self.results['matched_comparison'] = matched_results
+        else:
+            print("   ⚠️  No valid matched pairs found for any comparison.")
+
+    def analyze_top_topics(self):
+        """
+        Presenta i top 5 topic BERTopic con keywords e interpretazione automatica.
+        """
+        print("\n>>> Analyzing Top Topics from BERTopic...")
+
+        # First try to use in-memory data from topic extraction
+        if 'topics' in self.results and self.results['topics'] is not None:
+            topic_info = self.results['topics'].copy()
+            print("   Using in-memory topic data")
+        else:
+            # Fallback to reading from CSV
+            topic_info_path = os.path.join(self.run_dir, "data", "topic_info.csv")
+            if not os.path.exists(topic_info_path):
+                print(f"   ⚠️  Topic info not available (neither in memory nor on disk)")
+                return
+            topic_info = pd.read_csv(topic_info_path)
+
+        # Exclude outlier topic (-1)
+        topic_info = topic_info[topic_info['Topic'] != -1]
+
+        if len(topic_info) == 0:
+            print("   ⚠️  No valid topics found (only outliers).")
+            return
+
+        # Top 5 by count
+        top5 = topic_info.nlargest(5, 'Count')
+
+        interpretations = []
+        print("\n   Top 5 Topics by Frequency:")
+
+        for _, row in top5.iterrows():
+            # Parse keywords
+            try:
+                if isinstance(row['Representation'], str):
+                    keywords = eval(row['Representation'])
+                else:
+                    keywords = row['Representation']
+            except:
+                keywords = str(row['Representation']).split(',')
+
+            # Auto-classify topic
+            keywords_lower = [str(kw).lower() for kw in keywords[:10]]
+            keywords_str = ' '.join(keywords_lower)
+
+            if any(kw in keywords_str for kw in ['test', 'coverage', 'assert', 'mock', 'unit', 'spec']):
+                category = 'Testing'
+            elif any(kw in keywords_str for kw in ['security', 'auth', 'token', 'secret', 'vulnerab', 'cred']):
+                category = 'Security'
+            elif any(kw in keywords_str for kw in ['style', 'format', 'lint', 'naming', 'indent', 'whitespace']):
+                category = 'Code Style'
+            elif any(kw in keywords_str for kw in ['bug', 'fix', 'error', 'crash', 'null', 'exception', 'fail']):
+                category = 'Logic/Bugs'
+            elif any(kw in keywords_str for kw in ['doc', 'readme', 'comment', 'explain', 'example', 'typo']):
+                category = 'Documentation'
+            else:
+                category = 'Other'
+
+            interpretations.append({
+                'topic_id': row['Topic'],
+                'count': row['Count'],
+                'top_keywords': keywords[:5] if isinstance(keywords, list) else keywords,
+                'inferred_category': category,
+                'language': row.get('language', 'EN')
+            })
+
+            print(f"      Topic {row['Topic']} ({category}): {row['Count']} comments")
+            print(f"         Keywords: {keywords[:5]}")
+
+        # Save
+        interp_df = pd.DataFrame(interpretations)
+        output_path = os.path.join(self.run_dir, "data", "top5_topics_interpreted.csv")
+        interp_df.to_csv(output_path, index=False)
+        print(f"\n   ✓ Saved top 5 topics to: {output_path}")
+
+        self.results['top_topics'] = interpretations
+        return interp_df
+
+    def analyze_agent_category_profile(self):
+        """
+        Crea profilo friction per Agent × Category.
+        Identifica le debolezze di ciascun agent.
+        """
+        print("\n>>> Analyzing Agent × Category Friction Profile...")
+
+        if not hasattr(self, 'analyzed_df') or self.analyzed_df is None:
+            print("   ⚠️  No analyzed data available.")
+            return
+
+        df = self.analyzed_df.copy()
+
+        # Check if friction_category exists
+        if 'friction_category' not in df.columns:
+            print("   ⚠️  friction_category not available. Run classify_friction_categories() first.")
+            return
+
+        # Filter to negative comments with valid categories
+        df_neg = df[(df['is_negative'] == True) & (df['friction_category'].notna()) &
+                    (df['friction_category'] != 'N/A')].copy()
+
+        if len(df_neg) == 0:
+            print("   ⚠️  No negative comments with categories found.")
+            return
+
+        print(f"   Analyzing {len(df_neg)} negative comments with category labels")
+
+        # Create pivot table
+        profile = df_neg.pivot_table(
+            values='friction_score',
+            index='agent',
+            columns='friction_category',
+            aggfunc=['mean', 'count']
+        )
+
+        # Save full profile
+        output_path = os.path.join(self.run_dir, "data", "agent_category_profile.csv")
+        profile.to_csv(output_path)
+        print(f"   ✓ Saved profile to: {output_path}")
+
+        # Create heatmap for means
+        try:
+            means = profile['mean']
+            plt.figure(figsize=(12, 6))
+            sns.heatmap(means, annot=True, fmt='.3f', cmap='RdYlGn_r',
+                       cbar_kws={'label': 'Mean Friction Score'})
+            plt.title('Mean Friction Score by Agent × Category\n(Negative Comments Only)', fontsize=14)
+            plt.xlabel('Friction Category', fontsize=12)
+            plt.ylabel('Agent', fontsize=12)
+            plt.tight_layout()
+            plot_path = os.path.join(self.run_dir, "plots", "agent_category_heatmap.png")
+            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"   ✓ Saved heatmap to: {plot_path}")
+        except Exception as e:
+            print(f"   ⚠️  Heatmap creation failed: {e}")
+
+        # Identify weaknesses for each agent
+        print("\n   Agent Weaknesses (Highest Friction Categories):")
+        weaknesses = []
+        try:
+            means_flat = profile['mean']
+            for agent in means_flat.index:
+                agent_means = means_flat.loc[agent]
+                if agent_means.notna().any():
+                    worst_cat = agent_means.idxmax()
+                    worst_score = agent_means.max()
+                    weaknesses.append({
+                        'agent': agent,
+                        'highest_friction_category': worst_cat,
+                        'friction_score': worst_score
+                    })
+                    print(f"      {agent}: {worst_cat} ({worst_score:.3f})")
+        except Exception as e:
+            print(f"   ⚠️  Weakness identification failed: {e}")
+
+        if weaknesses:
+            weakness_df = pd.DataFrame(weaknesses)
+            weakness_path = os.path.join(self.run_dir, "data", "agent_weaknesses.csv")
+            weakness_df.to_csv(weakness_path, index=False)
+            print(f"   ✓ Saved weaknesses to: {weakness_path}")
+
+        self.results['agent_category_profile'] = {
+            'profile': profile.to_dict() if hasattr(profile, 'to_dict') else str(profile),
+            'weaknesses': weaknesses
+        }
+
+    def analyze_devin_case(self):
+        """
+        Analisi approfondita del caso Devin.
+        Verifica se Devin genera friction uniforme indipendentemente dal PR type.
+        """
+        print("\n>>> Analyzing Devin Case (Uniform Friction Hypothesis)...")
+
+        if not hasattr(self, 'analyzed_df') or self.analyzed_df is None:
+            print("   ⚠️  No analyzed data available.")
+            return
+
+        df = self.analyzed_df.copy()
+
+        # Filter to Devin
+        devin_df = df[df['agent'] == 'Devin'].copy()
+
+        if len(devin_df) < 30:
+            print(f"   ⚠️  Insufficient Devin data: {len(devin_df)} comments")
+            return
+
+        print(f"   Devin comments: {len(devin_df)}")
+
+        # Kruskal-Wallis test for PR type differences
+        if 'pr_type' not in devin_df.columns:
+            print("   ⚠️  pr_type column not available.")
+            return
+
+        # Group by PR type (min 10 samples per group)
+        pr_type_counts = devin_df['pr_type'].value_counts()
+        valid_types = pr_type_counts[pr_type_counts >= 10].index.tolist()
+
+        if len(valid_types) < 2:
+            print(f"   ⚠️  Insufficient PR types with ≥10 comments: {len(valid_types)}")
+            return
+
+        groups = [devin_df[devin_df['pr_type'] == pt]['friction_score'].values for pt in valid_types]
+
+        stat, p = stats.kruskal(*groups)
+
+        # Friction by PR type
+        friction_by_type = devin_df[devin_df['pr_type'].isin(valid_types)].groupby('pr_type')['friction_score'].agg([
+            'mean', 'std', 'count'
+        ])
+
+        print("\n   Devin Friction by PR Type:")
+        print(friction_by_type.to_string())
+
+        print(f"\n   Kruskal-Wallis Test:")
+        print(f"      H-statistic: {stat:.4f}")
+        print(f"      p-value: {p:.4f}")
+
+        is_uniform = p > 0.05
+        if is_uniform:
+            interpretation = "Devin genera friction UNIFORME indipendentemente dal tipo di task (p > 0.05)"
+            print(f"   ✓ {interpretation}")
+        else:
+            interpretation = "Devin mostra VARIAZIONE significativa per tipo di task (p ≤ 0.05)"
+            print(f"   ⚠️  {interpretation}")
+
+        # Compare with other agents
+        print("\n   Comparison: PR Type Effect by Agent")
+        for agent in df['agent'].unique():
+            if agent == 'Devin':
+                continue
+            agent_df = df[df['agent'] == agent]
+            agent_valid_types = agent_df['pr_type'].value_counts()
+            agent_valid = agent_valid_types[agent_valid_types >= 10].index.tolist()
+
+            if len(agent_valid) >= 2:
+                agent_groups = [agent_df[agent_df['pr_type'] == pt]['friction_score'].values for pt in agent_valid]
+                try:
+                    a_stat, a_p = stats.kruskal(*agent_groups)
+                    sig = "uniform" if a_p > 0.05 else "varies"
+                    print(f"      {agent}: p={a_p:.4f} ({sig})")
+                except:
+                    print(f"      {agent}: insufficient data")
+
+        # Save results
+        results = {
+            'n_devin_comments': len(devin_df),
+            'pr_types_analyzed': valid_types,
+            'kruskal_wallis_stat': stat,
+            'kruskal_wallis_p': p,
+            'is_uniform': is_uniform,
+            'interpretation': interpretation,
+            'mean_friction': devin_df['friction_score'].mean(),
+            'std_friction': devin_df['friction_score'].std()
+        }
+
+        # Save as CSV
+        results_df = pd.Series(results)
+        output_path = os.path.join(self.run_dir, "data", "devin_case_analysis.csv")
+        results_df.to_csv(output_path, header=['value'])
+        print(f"\n   ✓ Saved Devin case analysis to: {output_path}")
+
+        # Save friction by type
+        friction_path = os.path.join(self.run_dir, "data", "devin_friction_by_pr_type.csv")
+        friction_by_type.to_csv(friction_path)
+        print(f"   ✓ Saved Devin friction by PR type to: {friction_path}")
+
+        self.results['devin_case_analysis'] = results
+
+    # ==========================================
     # PHASE 6: Save Results
     # ==========================================
     def save_results(self):
@@ -4051,6 +4779,16 @@ class FrictionAnalyzerProject:
 
         # Phase 4d: Statistical power analysis
         self.analyze_power()
+
+        # Phase 4e: Additional Analyses (Construct & Ecological Validity)
+        self.generate_validation_sample(n_samples=300)  # Manual validation sample
+        self.analyze_model_disagreements()  # Confusion analysis between models
+        self.analyze_repository_distribution()  # Repository-level stats
+        self.analyze_mixed_effects()  # Mixed-effects model with repo as random effect
+        self.analyze_with_matching()  # Propensity score matching
+        self.analyze_top_topics()  # Top 5 topics interpretation
+        self.analyze_agent_category_profile()  # Agent × Category profile
+        self.analyze_devin_case()  # Devin uniform friction analysis
 
         # Enhanced Research Questions
         self.analyze_temporal_evolution()  # RQ5
