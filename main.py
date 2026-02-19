@@ -2220,6 +2220,52 @@ class FrictionAnalyzerProject:
                     else:
                         interp = "large"
                     print(f"   Effect size: {interp}")
+
+                    # === PR-LEVEL correlation (primary analysis per paper) ===
+                    # Aggregate to PR-level first, then calculate correlation
+                    pr_id_col = None
+                    for possible_name in ['id_pr', 'pull_request_id', 'pr_id']:
+                        if possible_name in df.columns:
+                            pr_id_col = possible_name
+                            break
+
+                    if pr_id_col:
+                        pr_level = df.groupby(pr_id_col).agg({
+                            'friction_score': 'mean',
+                            'is_merged': 'first',
+                            'agent': 'first'
+                        }).reset_index()
+
+                        # Filter valid PR-level data
+                        pr_valid_mask = pr_level['is_merged'].notna() & pr_level['friction_score'].notna()
+                        pr_valid = pr_level[pr_valid_mask]
+
+                        if len(pr_valid) >= 10 and pr_valid['is_merged'].nunique() >= 2:
+                            r_pr, p_pr = stats.pointbiserialr(
+                                pr_valid['friction_score'],
+                                pr_valid['is_merged']
+                            )
+                            self.results['correlation_pr_level'] = {
+                                'r': r_pr,
+                                'p': p_pr,
+                                'n': len(pr_valid)
+                            }
+                            print(f"   PR-level Point-Biserial: r = {r_pr:.3f}, p = {p_pr:.2e}, n = {len(pr_valid)}")
+
+                            # Interpret PR-level correlation
+                            if abs(r_pr) < 0.1:
+                                interp_pr = "negligible"
+                            elif abs(r_pr) < 0.3:
+                                interp_pr = "small"
+                            elif abs(r_pr) < 0.5:
+                                interp_pr = "medium"
+                            else:
+                                interp_pr = "large"
+                            print(f"   PR-level effect size: {interp_pr}")
+                        else:
+                            print("   Warning: Not enough PR-level data for correlation")
+                    else:
+                        print("   Warning: No PR ID column found for PR-level correlation")
                 else:
                     print("   Warning: Not enough valid data for correlation analysis")
 
@@ -2931,19 +2977,22 @@ class FrictionAnalyzerProject:
             # Calculate time-to-merge in hours
             df['time_to_merge_hours'] = (df['merged_time'] - df['created_time']).dt.total_seconds() / 3600
 
-            # Filter valid values
-            valid_merge = df.dropna(subset=['time_to_merge_hours'])
-            valid_merge = valid_merge[valid_merge['time_to_merge_hours'] > 0]
-            valid_merge = valid_merge[valid_merge['time_to_merge_hours'] < 8760]  # Less than 1 year
+            # STEP 1: Aggregate ALL comments to PR-level FIRST
+            # This ensures friction_score is calculated on ALL comments of the PR,
+            # not just those with timestamps (which would exclude inline comments)
+            pr_id_col = 'id_pr' if 'id_pr' in df.columns else df.columns[0]
+            pr_aggregated = df.groupby(pr_id_col).agg({
+                'friction_score': 'mean',       # Mean on ALL comments of the PR
+                'time_to_merge_hours': 'first', # TTM is a PR-level property
+                'agent': 'first'
+            }).reset_index()
 
-            if len(valid_merge) >= 10:
-                # Aggregate friction by PR
-                pr_id_col = 'id_pr' if 'id_pr' in valid_merge.columns else valid_merge.columns[0]
-                pr_aggregated = valid_merge.groupby(pr_id_col).agg({
-                    'friction_score': 'mean',
-                    'time_to_merge_hours': 'first',
-                    'agent': 'first'
-                }).reset_index()
+            # STEP 2: THEN filter PRs with valid TTM
+            pr_aggregated = pr_aggregated.dropna(subset=['time_to_merge_hours'])
+            pr_aggregated = pr_aggregated[pr_aggregated['time_to_merge_hours'] > 0]
+            pr_aggregated = pr_aggregated[pr_aggregated['time_to_merge_hours'] < 8760]  # Less than 1 year
+
+            if len(pr_aggregated) >= 10:
 
                 # Correlation
                 corr, p_val = stats.spearmanr(pr_aggregated['friction_score'], pr_aggregated['time_to_merge_hours'])
@@ -4638,17 +4687,38 @@ class FrictionAnalyzerProject:
         print("\n   Devin Friction by PR Type:")
         print(friction_by_type.to_string())
 
+        # Calculate eta-squared for power context
+        n_devin = len(devin_df[devin_df['pr_type'].isin(valid_types)])
+        k = len(valid_types)
+        eta_sq = (stat - k + 1) / (n_devin - k) if n_devin > k else 0
+        eta_sq = max(0, min(eta_sq, 1))  # Clamp to [0, 1]
+        cohens_f = np.sqrt(eta_sq / (1 - eta_sq)) if eta_sq < 1 else 0
+
         print(f"\n   Kruskal-Wallis Test:")
         print(f"      H-statistic: {stat:.4f}")
         print(f"      p-value: {p:.4f}")
+        print(f"      Effect size (η²): {eta_sq:.4f}")
+        print(f"      Cohen's f: {cohens_f:.4f}")
 
-        is_uniform = p > 0.05
-        if is_uniform:
-            interpretation = "Devin genera friction UNIFORME indipendentemente dal tipo di task (p > 0.05)"
-            print(f"   ✓ {interpretation}")
-        else:
-            interpretation = "Devin mostra VARIAZIONE significativa per tipo di task (p ≤ 0.05)"
+        # IMPORTANT: p > 0.05 means "not significant", NOT "uniform"
+        # Absence of evidence ≠ evidence of absence
+        is_not_significant = p > 0.05
+        if is_not_significant:
+            interpretation = (
+                f"No statistically significant friction variation detected across PR types "
+                f"(p={p:.3f}), but the test has limited power (η²={eta_sq:.4f}, "
+                f"Cohen's f={cohens_f:.4f}). Observed friction range: "
+                f"{friction_by_type['mean'].min():.3f}–{friction_by_type['mean'].max():.3f}. "
+                f"Absence of significance does not confirm uniformity."
+            )
             print(f"   ⚠️  {interpretation}")
+        else:
+            interpretation = (
+                f"Statistically significant friction variation detected across PR types "
+                f"(p={p:.3f}, η²={eta_sq:.4f}). Observed friction range: "
+                f"{friction_by_type['mean'].min():.3f}–{friction_by_type['mean'].max():.3f}."
+            )
+            print(f"   ✓ {interpretation}")
 
         # Compare with other agents
         print("\n   Comparison: PR Type Effect by Agent")
@@ -4663,7 +4733,7 @@ class FrictionAnalyzerProject:
                 agent_groups = [agent_df[agent_df['pr_type'] == pt]['friction_score'].values for pt in agent_valid]
                 try:
                     a_stat, a_p = stats.kruskal(*agent_groups)
-                    sig = "uniform" if a_p > 0.05 else "varies"
+                    sig = "not significant" if a_p > 0.05 else "significant"
                     print(f"      {agent}: p={a_p:.4f} ({sig})")
                 except:
                     print(f"      {agent}: insufficient data")
@@ -4674,7 +4744,11 @@ class FrictionAnalyzerProject:
             'pr_types_analyzed': valid_types,
             'kruskal_wallis_stat': stat,
             'kruskal_wallis_p': p,
-            'is_uniform': is_uniform,
+            'eta_squared': eta_sq,
+            'cohens_f': cohens_f,
+            'is_not_significant': is_not_significant,
+            'friction_range_min': friction_by_type['mean'].min(),
+            'friction_range_max': friction_by_type['mean'].max(),
             'interpretation': interpretation,
             'mean_friction': devin_df['friction_score'].mean(),
             'std_friction': devin_df['friction_score'].std()
