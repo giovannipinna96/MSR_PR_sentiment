@@ -254,6 +254,21 @@ class FrictionAnalyzerProject:
 
         print(f"📁 Output directory created: {self.run_dir}")
 
+    def save_figure(self, plot_path, dpi=1600):
+        """
+        Save figure in both PNG (high-res) and PDF formats.
+
+        Args:
+            plot_path: Path to save the figure (should end with .png)
+            dpi: DPI for PNG format (default 1600)
+        """
+        # Save PNG at high resolution
+        plt.savefig(plot_path, dpi=dpi, bbox_inches='tight')
+
+        # Save PDF version
+        pdf_path = plot_path.replace('.png', '.pdf')
+        plt.savefig(pdf_path, format='pdf', bbox_inches='tight')
+
     # ==========================================
     # PHASE 0: Dataset Schema Inspection
     # ==========================================
@@ -2267,10 +2282,46 @@ class FrictionAnalyzerProject:
         # Chi-square test for category-agent independence
         if category_agent.shape[0] >= 2 and category_agent.shape[1] >= 2:
             try:
+                # Original chi-square test
                 chi2, p_val, dof, expected = stats.chi2_contingency(category_agent)
-                self.results['chi2_category_agent'] = {'chi2': chi2, 'p_value': p_val, 'dof': dof}
+                min_expected = expected.min()
+                cells_below_5 = (expected < 5).sum()
+
+                self.results['chi2_category_agent'] = {
+                    'chi2': chi2, 'p_value': p_val, 'dof': dof,
+                    'min_expected': min_expected, 'cells_below_5': cells_below_5
+                }
                 sig = "Yes" if p_val < 0.05 else "No"
                 print(f"   Chi-square test (category vs agent): chi2={chi2:.2f}, p={p_val:.4f}, Significant: {sig}")
+                print(f"   Min expected cell: {min_expected:.2f}, Cells with expected < 5: {cells_below_5}")
+
+                # Sensitivity check: Collapse small agents if expected < 5
+                if cells_below_5 > 0:
+                    print("\n   Sensitivity check: Collapsing small agents into 'Other_agents'...")
+                    df_collapsed = df.copy()
+                    # Keep Copilot and Devin (largest samples), collapse others
+                    small_agents = ['Claude_Code', 'Cursor', 'OpenAI_Codex']
+                    df_collapsed['agent_collapsed'] = df_collapsed['agent'].apply(
+                        lambda x: 'Other_agents' if x in small_agents else x
+                    )
+
+                    category_agent_collapsed = df_collapsed.groupby(
+                        ['friction_category', 'agent_collapsed']
+                    ).size().unstack(fill_value=0)
+
+                    chi2_c, p_val_c, dof_c, expected_c = stats.chi2_contingency(category_agent_collapsed)
+                    min_expected_c = expected_c.min()
+                    cells_below_5_c = (expected_c < 5).sum()
+
+                    self.results['chi2_category_agent_collapsed'] = {
+                        'chi2': chi2_c, 'p_value': p_val_c, 'dof': dof_c,
+                        'min_expected': min_expected_c, 'cells_below_5': cells_below_5_c,
+                        'collapsed_agents': small_agents
+                    }
+                    sig_c = "Yes" if p_val_c < 0.05 else "No"
+                    print(f"   Collapsed chi-square: chi2={chi2_c:.2f}, p={p_val_c:.4f}, Significant: {sig_c}")
+                    print(f"   Min expected (collapsed): {min_expected_c:.2f}, Cells < 5: {cells_below_5_c}")
+
             except Exception as e:
                 print(f"   Chi-square test failed: {e}")
         else:
@@ -2407,7 +2458,7 @@ class FrictionAnalyzerProject:
         X_agents_only = agent_dummies[valid_idx].copy().astype(float)
         X_agents_only = add_constant(X_agents_only)
         try:
-            model_unadjusted = OLS(y, X_agents_only).fit()
+            model_unadjusted = OLS(y, X_agents_only).fit(cov_type='HC3')  # Robust SE
             print(f"   R² = {model_unadjusted.rsquared:.4f}")
             print(f"   Adjusted R² = {model_unadjusted.rsquared_adj:.4f}")
 
@@ -2428,7 +2479,7 @@ class FrictionAnalyzerProject:
         # === Model 2: Agents + Confounders (adjusted) ===
         print("\n   --- Model 2: Adjusted (Agents + Confounders) ---")
         try:
-            model_adjusted = OLS(y, X_full).fit()
+            model_adjusted = OLS(y, X_full).fit(cov_type='HC3')  # Robust SE
             print(f"   R² = {model_adjusted.rsquared:.4f}")
             print(f"   Adjusted R² = {model_adjusted.rsquared_adj:.4f}")
 
@@ -2769,7 +2820,7 @@ class FrictionAnalyzerProject:
         plt.tight_layout()
 
         plot_path = os.path.join(self.run_dir, "plots", "temporal_evolution.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        self.save_figure(plot_path)
         print(f"   ✓ Saved temporal plot: {plot_path}")
         plt.close()
 
@@ -2832,7 +2883,7 @@ class FrictionAnalyzerProject:
         plt.tight_layout()
 
         plot_path = os.path.join(self.run_dir, "plots", "topic_agent_heatmap.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        self.save_figure(plot_path)
         print(f"   ✓ Saved topic-agent heatmap: {plot_path}")
         plt.close()
 
@@ -2896,8 +2947,8 @@ class FrictionAnalyzerProject:
 
                 # Correlation
                 corr, p_val = stats.spearmanr(pr_aggregated['friction_score'], pr_aggregated['time_to_merge_hours'])
-                self.results['time_to_merge_correlation'] = {'r': corr, 'p': p_val}
-                print(f"   ✓ Time-to-merge correlation: r={corr:.3f}, p={p_val:.4f}")
+                self.results['time_to_merge_correlation'] = {'rho': corr, 'p': p_val, 'n': len(pr_aggregated)}
+                print(f"   ✓ Time-to-merge Spearman correlation: ρ={corr:.3f}, p={p_val:.4f}, n={len(pr_aggregated)}")
 
                 # Visualization: Scatter plot
                 plt.figure(figsize=(12, 7))
@@ -2919,7 +2970,7 @@ class FrictionAnalyzerProject:
                 plt.tight_layout()
 
                 plot_path = os.path.join(self.run_dir, "plots", "friction_vs_timemerge.png")
-                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+                self.save_figure(plot_path)
                 print(f"   ✓ Saved time-to-merge plot: {plot_path}")
                 plt.close()
             else:
@@ -2969,7 +3020,7 @@ class FrictionAnalyzerProject:
                 plt.tight_layout()
 
                 plot_path = os.path.join(self.run_dir, "plots", "friction_vs_iterations.png")
-                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+                self.save_figure(plot_path)
                 print(f"   ✓ Saved iterations plot: {plot_path}")
                 plt.close()
             else:
@@ -2999,7 +3050,7 @@ class FrictionAnalyzerProject:
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
         plot_path = os.path.join(plots_dir, "friction_boxplot.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3013,7 +3064,7 @@ class FrictionAnalyzerProject:
         plt.legend(title="AI Agent", bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
         plot_path = os.path.join(plots_dir, "sentiment_distribution.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3028,7 +3079,7 @@ class FrictionAnalyzerProject:
         plt.legend()
         plt.tight_layout()
         plot_path = os.path.join(plots_dir, "friction_distribution_histogram.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3041,7 +3092,7 @@ class FrictionAnalyzerProject:
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
         plot_path = os.path.join(plots_dir, "friction_violin.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3056,8 +3107,6 @@ class FrictionAnalyzerProject:
         """
         print(">>> Phase 5a: Emotion Visualizations...")
         plots_dir = os.path.join(self.run_dir, "plots")
-        emotions_dir = os.path.join(plots_dir, "emotions")
-        os.makedirs(emotions_dir, exist_ok=True)
 
         df = self.analyzed_df
 
@@ -3078,8 +3127,8 @@ class FrictionAnalyzerProject:
         plt.ylabel("Count", fontsize=12)
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
-        plot_path = os.path.join(emotions_dir, "emotion_distribution.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plot_path = os.path.join(plots_dir, "emotion_distribution.png")
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3094,8 +3143,8 @@ class FrictionAnalyzerProject:
         plt.legend(title="Emotion", bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
-        plot_path = os.path.join(emotions_dir, "emotion_by_agent_stacked.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plot_path = os.path.join(plots_dir, "emotion_by_agent_stacked.png")
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3108,8 +3157,8 @@ class FrictionAnalyzerProject:
         plt.ylabel("Negative Emotion Score", fontsize=12)
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
-        plot_path = os.path.join(emotions_dir, "negative_emotion_by_agent.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plot_path = os.path.join(plots_dir, "emotion_negative_by_agent.png")
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3124,8 +3173,8 @@ class FrictionAnalyzerProject:
         plt.xlabel("Emotion", fontsize=12)
         plt.ylabel("Agent", fontsize=12)
         plt.tight_layout()
-        plot_path = os.path.join(emotions_dir, "emotion_heatmap_by_agent.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plot_path = os.path.join(plots_dir, "emotion_heatmap_by_agent.png")
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3147,12 +3196,12 @@ class FrictionAnalyzerProject:
         ax.set_xticklabels([c.replace('emotion_', '') for c in emotion_cols], rotation=45, ha='right')
         ax.legend()
         plt.tight_layout()
-        plot_path = os.path.join(emotions_dir, "emotion_ai_vs_human.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plot_path = os.path.join(plots_dir, "emotion_ai_vs_human.png")
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
-        print(f"   Emotion visualizations saved to: {emotions_dir}")
+        print(f"   Emotion visualizations saved to: {plots_dir}")
 
     # ==========================================
     # PHASE 5b: Category Visualizations
@@ -3182,7 +3231,7 @@ class FrictionAnalyzerProject:
         plt.title("Friction Categories Distribution", fontsize=14, fontweight='bold')
         plt.tight_layout()
         plot_path = os.path.join(plots_dir, "category_distribution_pie.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3196,7 +3245,7 @@ class FrictionAnalyzerProject:
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
         plot_path = os.path.join(plots_dir, "category_friction_boxplot.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3209,7 +3258,7 @@ class FrictionAnalyzerProject:
         plt.ylabel("Friction Category", fontsize=12)
         plt.tight_layout()
         plot_path = os.path.join(plots_dir, "category_agent_heatmap.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3224,7 +3273,7 @@ class FrictionAnalyzerProject:
             plt.legend(title="Category", bbox_to_anchor=(1.05, 1), loc='upper left')
             plt.tight_layout()
             plot_path = os.path.join(plots_dir, "category_proportion_by_agent.png")
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            self.save_figure(plot_path)
             print(f"   Saved: {plot_path}")
             plt.close()
 
@@ -3240,12 +3289,6 @@ class FrictionAnalyzerProject:
         print(">>> Phase 5c: Source-based Visualizations (Comments vs Reviews)...")
         plots_dir = os.path.join(self.run_dir, "plots")
 
-        # Create subfolders
-        comments_dir = os.path.join(plots_dir, "comments_only")
-        reviews_dir = os.path.join(plots_dir, "reviews_only")
-        os.makedirs(comments_dir, exist_ok=True)
-        os.makedirs(reviews_dir, exist_ok=True)
-
         df = self.analyzed_df
 
         # === AGGREGATED: Comments vs Reviews comparison ===
@@ -3260,7 +3303,7 @@ class FrictionAnalyzerProject:
             plt.xlabel("Source Type", fontsize=12)
             plt.tight_layout()
             plot_path = os.path.join(plots_dir, "friction_by_source.png")
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            self.save_figure(plot_path)
             print(f"   Saved: {plot_path}")
             plt.close()
 
@@ -3274,7 +3317,7 @@ class FrictionAnalyzerProject:
             plt.legend(title="Source")
             plt.tight_layout()
             plot_path = os.path.join(plots_dir, "sentiment_by_source.png")
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            self.save_figure(plot_path)
             print(f"   Saved: {plot_path}")
             plt.close()
 
@@ -3289,7 +3332,7 @@ class FrictionAnalyzerProject:
             plt.xticks(rotation=45, ha='right')
             plt.tight_layout()
             plot_path = os.path.join(plots_dir, "friction_agent_by_source.png")
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            self.save_figure(plot_path)
             print(f"   Saved: {plot_path}")
             plt.close()
 
@@ -3308,8 +3351,8 @@ class FrictionAnalyzerProject:
                 plt.xlabel("AI Agent", fontsize=12)
                 plt.xticks(rotation=45, ha='right')
                 plt.tight_layout()
-                plot_path = os.path.join(comments_dir, "friction_by_agent_comments.png")
-                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+                plot_path = os.path.join(plots_dir, "source_comments_friction_by_agent.png")
+                self.save_figure(plot_path)
                 print(f"   Saved: {plot_path}")
                 plt.close()
 
@@ -3321,8 +3364,8 @@ class FrictionAnalyzerProject:
             plt.xlabel("Sentiment", fontsize=12)
             plt.ylabel("Count", fontsize=12)
             plt.tight_layout()
-            plot_path = os.path.join(comments_dir, "sentiment_distribution_comments.png")
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plot_path = os.path.join(plots_dir, "source_comments_sentiment_distribution.png")
+            self.save_figure(plot_path)
             print(f"   Saved: {plot_path}")
             plt.close()
 
@@ -3341,8 +3384,8 @@ class FrictionAnalyzerProject:
                 plt.xlabel("AI Agent", fontsize=12)
                 plt.xticks(rotation=45, ha='right')
                 plt.tight_layout()
-                plot_path = os.path.join(reviews_dir, "friction_by_agent_reviews.png")
-                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+                plot_path = os.path.join(plots_dir, "source_reviews_friction_by_agent.png")
+                self.save_figure(plot_path)
                 print(f"   Saved: {plot_path}")
                 plt.close()
 
@@ -3354,8 +3397,8 @@ class FrictionAnalyzerProject:
             plt.xlabel("Sentiment", fontsize=12)
             plt.ylabel("Count", fontsize=12)
             plt.tight_layout()
-            plot_path = os.path.join(reviews_dir, "sentiment_distribution_reviews.png")
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plot_path = os.path.join(plots_dir, "source_reviews_sentiment_distribution.png")
+            self.save_figure(plot_path)
             print(f"   Saved: {plot_path}")
             plt.close()
 
@@ -3370,8 +3413,6 @@ class FrictionAnalyzerProject:
         """
         print(">>> Phase 5d: PR Type Visualizations...")
         plots_dir = os.path.join(self.run_dir, "plots")
-        pr_type_dir = os.path.join(plots_dir, "by_pr_type")
-        os.makedirs(pr_type_dir, exist_ok=True)
 
         df = self.analyzed_df
 
@@ -3397,8 +3438,8 @@ class FrictionAnalyzerProject:
         plt.xlabel("PR Type", fontsize=12)
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
-        plot_path = os.path.join(pr_type_dir, "friction_by_pr_type.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plot_path = os.path.join(plots_dir, "prtype_friction_boxplot.png")
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3413,8 +3454,8 @@ class FrictionAnalyzerProject:
         plt.legend(title="Sentiment")
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
-        plot_path = os.path.join(pr_type_dir, "sentiment_by_pr_type.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plot_path = os.path.join(plots_dir, "prtype_sentiment_distribution.png")
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3425,8 +3466,8 @@ class FrictionAnalyzerProject:
         plt.pie(type_counts, labels=type_counts.index, autopct='%1.1f%%', colors=colors, startangle=90)
         plt.title("Distribution of PR Types", fontsize=14, fontweight='bold')
         plt.tight_layout()
-        plot_path = os.path.join(pr_type_dir, "pr_type_distribution.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plot_path = os.path.join(plots_dir, "prtype_distribution_pie.png")
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3438,8 +3479,8 @@ class FrictionAnalyzerProject:
         plt.xlabel("AI Agent", fontsize=12)
         plt.ylabel("PR Type", fontsize=12)
         plt.tight_layout()
-        plot_path = os.path.join(pr_type_dir, "friction_heatmap_type_agent.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plot_path = os.path.join(plots_dir, "prtype_agent_friction_heatmap.png")
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3455,8 +3496,8 @@ class FrictionAnalyzerProject:
         plt.axhline(y=df_typed['is_negative'].mean(), color='red', linestyle='--', label='Overall Mean')
         plt.legend()
         plt.tight_layout()
-        plot_path = os.path.join(pr_type_dir, "negative_rate_by_pr_type.png")
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plot_path = os.path.join(plots_dir, "prtype_negative_rate.png")
+        self.save_figure(plot_path)
         print(f"   Saved: {plot_path}")
         plt.close()
 
@@ -3471,8 +3512,8 @@ class FrictionAnalyzerProject:
             plt.legend(title="Source")
             plt.xticks(rotation=45, ha='right')
             plt.tight_layout()
-            plot_path = os.path.join(pr_type_dir, "friction_type_by_source.png")
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plot_path = os.path.join(plots_dir, "prtype_source_friction.png")
+            self.save_figure(plot_path)
             print(f"   Saved: {plot_path}")
             plt.close()
 
@@ -3683,8 +3724,8 @@ class FrictionAnalyzerProject:
             plt.legend(title="Agent", bbox_to_anchor=(1.02, 1), loc='upper left')
             plt.xticks(rotation=45, ha='right')
             plt.tight_layout()
-            plot_path = os.path.join(pr_type_dir, "friction_agent_by_pr_type_grouped.png")
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plot_path = os.path.join(plots_dir, "prtype_agent_grouped_bar.png")
+            self.save_figure(plot_path)
             print(f"   Saved: {plot_path}")
             plt.close()
 
@@ -3696,8 +3737,8 @@ class FrictionAnalyzerProject:
             plt.xlabel("Agent", fontsize=12)
             plt.ylabel("PR Type", fontsize=12)
             plt.tight_layout()
-            plot_path = os.path.join(pr_type_dir, "negative_rate_heatmap_type_agent.png")
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plot_path = os.path.join(plots_dir, "prtype_agent_negative_rate_heatmap.png")
+            self.save_figure(plot_path)
             print(f"   Saved: {plot_path}")
             plt.close()
 
@@ -3791,9 +3832,8 @@ class FrictionAnalyzerProject:
         print(f"   Agreements: {len(agreements)} ({100*len(agreements)/len(df):.1f}%)")
         print(f"   Disagreements: {len(disagreements)} ({100*len(disagreements)/len(df):.1f}%)")
 
-        # Create output directory for disagreement analysis
-        disagree_dir = os.path.join(self.run_dir, "data", "model_disagreements")
-        os.makedirs(disagree_dir, exist_ok=True)
+        # Output directory for disagreement analysis
+        data_dir = os.path.join(self.run_dir, "data")
 
         # Sample disagreement examples by type
         print("\n   Disagreement examples by type:")
@@ -3809,7 +3849,7 @@ class FrictionAnalyzerProject:
                 examples['senticr_confidence'] = group.head(10)['senticr_score']
 
             examples.to_csv(
-                os.path.join(disagree_dir, f"disagreement_{tr_label}_vs_{sc_label}.csv"),
+                os.path.join(data_dir, f"disagreement_{tr_label}_vs_{sc_label}.csv"),
                 index=False
             )
 
@@ -3829,7 +3869,7 @@ class FrictionAnalyzerProject:
 
         # Save confusion matrix
         cm_df = pd.DataFrame(cm, index=[f'RoBERTa_{l}' for l in labels], columns=[f'SentiCR_{l}' for l in labels])
-        cm_df.to_csv(os.path.join(disagree_dir, "confusion_matrix.csv"))
+        cm_df.to_csv(os.path.join(data_dir, "model_confusion_matrix.csv"))
 
         # Classification report (treating RoBERTa as "ground truth" for comparison)
         report = classification_report(
@@ -3839,7 +3879,7 @@ class FrictionAnalyzerProject:
             output_dict=True
         )
         pd.DataFrame(report).transpose().to_csv(
-            os.path.join(disagree_dir, "classification_report_senticr_vs_roberta.csv")
+            os.path.join(data_dir, "model_classification_report.csv")
         )
 
         # Visualize confusion matrix
@@ -3851,11 +3891,12 @@ class FrictionAnalyzerProject:
         plt.ylabel('Twitter RoBERTa Prediction')
         plt.title('Confusion Matrix: RoBERTa vs SentiCR')
         plt.tight_layout()
-        plt.savefig(os.path.join(self.run_dir, "plots", "model_confusion_matrix.png"), dpi=150)
+        plot_path = os.path.join(self.run_dir, "plots", "model_confusion_matrix.png")
+        self.save_figure(plot_path)
         plt.close()
 
-        print(f"\n   ✓ Saved confusion matrix and examples to: {disagree_dir}")
-        print(f"   ✓ Saved confusion matrix plot to: plots/model_confusion_matrix.png")
+        print(f"\n   ✓ Saved confusion matrix and examples to: {data_dir}")
+        print(f"   ✓ Saved confusion matrix plot to: plots/model_confusion_matrix.png and .pdf")
 
         # Store results
         self.results['model_disagreement_analysis'] = {
@@ -4051,6 +4092,155 @@ class FrictionAnalyzerProject:
 
         except Exception as e:
             print(f"   ⚠️  Mixed-effects model failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def analyze_mixed_effects_pr_level(self):
+        """
+        Mixed-effects model con PR come random effect (sensitivity check).
+
+        Questo è un sensitivity check rispetto al modello con repo come random effect.
+        Il clustering a livello PR cattura la dipendenza tra commenti dello stesso PR,
+        che può essere più forte della dipendenza a livello repository.
+
+        Risultato atteso: Se alcuni agenti perdono significatività con il clustering
+        a livello PR, significa che parte della differenza osservata è dovuta al
+        clustering interno ai PR piuttosto che a differenze reali tra agenti.
+        """
+        print("\n>>> Sensitivity Check: Mixed-Effects Model (PR as Random Effect)...")
+
+        if not hasattr(self, 'analyzed_df') or self.analyzed_df is None:
+            print("   ⚠️  No analyzed data available.")
+            return
+
+        df = self.analyzed_df.copy()
+
+        # Check if pr_id column exists
+        pr_id_col = None
+        for possible_name in ['id_pr', 'pull_request_id', 'pr_id']:
+            if possible_name in df.columns:
+                pr_id_col = possible_name
+                break
+
+        if pr_id_col is None:
+            print("   ⚠️  No PR ID column found. Cannot run PR-level mixed-effects.")
+            return
+
+        # Filter to valid data
+        df_valid = df[df[pr_id_col].notna() & df['friction_score'].notna()].copy()
+
+        # Need at least 2 observations per PR for random effects
+        pr_counts = df_valid[pr_id_col].value_counts()
+        valid_prs = pr_counts[pr_counts >= 2].index
+        df_valid = df_valid[df_valid[pr_id_col].isin(valid_prs)]
+
+        print(f"   Comments for PR-level mixed-effects: {len(df_valid)} (PRs with ≥2 comments)")
+        print(f"   Unique PRs: {df_valid[pr_id_col].nunique()}")
+
+        if len(df_valid) < 100:
+            print("   ⚠️  Insufficient data for PR-level mixed-effects model.")
+            return
+
+        try:
+            import statsmodels.formula.api as smf
+
+            # Reference category: Claude_Code (to match repo-level model)
+            agents = df_valid['agent'].unique().tolist()
+            ref_agent = 'Claude_Code' if 'Claude_Code' in agents else agents[0]
+
+            # Create dummy variables
+            for agent in agents:
+                if agent != ref_agent:
+                    df_valid[f'agent_{agent}'] = (df_valid['agent'] == agent).astype(int)
+
+            # Build formula
+            agent_vars = [f'agent_{a}' for a in agents if a != ref_agent]
+            formula = f"friction_score ~ {' + '.join(agent_vars)}"
+
+            print(f"   Formula: {formula}")
+            print(f"   Reference agent: {ref_agent}")
+
+            # Fit mixed-effects model with PR as random effect
+            model = smf.mixedlm(formula, df_valid, groups=df_valid[pr_id_col])
+            result = model.fit(method='powell')
+
+            # Save full results
+            output_path = os.path.join(self.run_dir, "data", "mixed_effects_pr_level.txt")
+            with open(output_path, 'w') as f:
+                f.write("SENSITIVITY CHECK: Mixed-Effects Model with PR as Random Effect\n")
+                f.write("=" * 70 + "\n\n")
+                f.write(result.summary().as_text())
+            print(f"\n   ✓ Saved full model summary to: {output_path}")
+
+            # Extract coefficients
+            coeffs = pd.DataFrame({
+                'variable': result.params.index,
+                'coefficient': result.params.values,
+                'std_err': result.bse.values,
+                'z_value': result.tvalues.values,
+                'p_value': result.pvalues.values
+            })
+            coeffs_path = os.path.join(self.run_dir, "data", "mixed_effects_pr_level_coefficients.csv")
+            coeffs.to_csv(coeffs_path, index=False)
+            print(f"   ✓ Saved coefficients to: {coeffs_path}")
+
+            # Calculate ICC
+            var_pr = result.cov_re.iloc[0, 0]
+            var_resid = result.scale
+            icc_pr = var_pr / (var_pr + var_resid) if (var_pr + var_resid) > 0 else 0
+
+            print(f"\n   PR-Level Mixed-Effects Model Results:")
+            print(f"   ICC (PR clustering): {icc_pr:.4f}")
+            print(f"   Interpretation: {icc_pr*100:.1f}% of friction variance is explained by PR")
+
+            # Compare with repo-level ICC if available
+            if 'mixed_effects' in self.results:
+                icc_repo = self.results['mixed_effects'].get('icc', None)
+                if icc_repo:
+                    print(f"\n   Comparison:")
+                    print(f"      ICC (Repo-level): {icc_repo:.4f}")
+                    print(f"      ICC (PR-level): {icc_pr:.4f}")
+                    if icc_pr > icc_repo:
+                        print(f"      → PR-level clustering is STRONGER than repo-level")
+                    else:
+                        print(f"      → Repo-level clustering is stronger than PR-level")
+
+            print("\n   Agent coefficients (relative to {}):")
+            for _, row in coeffs[coeffs['variable'].str.startswith('agent_')].iterrows():
+                agent_name = row['variable'].replace('agent_', '')
+                sig = '***' if row['p_value'] < 0.001 else ('**' if row['p_value'] < 0.01 else ('*' if row['p_value'] < 0.05 else ''))
+                print(f"      {agent_name}: {row['coefficient']:.4f} (p={row['p_value']:.4f}) {sig}")
+
+            # Check for significance changes vs repo-level model
+            if 'mixed_effects' in self.results and 'coefficients' in self.results['mixed_effects']:
+                print("\n   Significance Comparison (Repo-level vs PR-level):")
+                repo_coeffs = {c['variable']: c for c in self.results['mixed_effects']['coefficients']}
+                for _, row in coeffs[coeffs['variable'].str.startswith('agent_')].iterrows():
+                    var = row['variable']
+                    if var in repo_coeffs:
+                        repo_p = repo_coeffs[var]['p_value']
+                        pr_p = row['p_value']
+                        repo_sig = "✓" if repo_p < 0.05 else "✗"
+                        pr_sig = "✓" if pr_p < 0.05 else "✗"
+                        agent_name = var.replace('agent_', '')
+                        change = ""
+                        if repo_sig == "✓" and pr_sig == "✗":
+                            change = " ← LOSES SIGNIFICANCE"
+                        elif repo_sig == "✗" and pr_sig == "✓":
+                            change = " ← GAINS SIGNIFICANCE"
+                        print(f"      {agent_name}: Repo p={repo_p:.4f} {repo_sig}, PR p={pr_p:.4f} {pr_sig}{change}")
+
+            self.results['mixed_effects_pr_level'] = {
+                'icc': icc_pr,
+                'n_comments': len(df_valid),
+                'n_prs': df_valid[pr_id_col].nunique(),
+                'var_pr': var_pr,
+                'var_resid': var_resid,
+                'coefficients': coeffs.to_dict('records')
+            }
+
+        except Exception as e:
+            print(f"   ⚠️  PR-level mixed-effects model failed: {e}")
             import traceback
             traceback.print_exc()
 
@@ -4265,7 +4455,7 @@ class FrictionAnalyzerProject:
             plt.ylabel('Agent', fontsize=12)
             plt.tight_layout()
             plot_path = os.path.join(self.run_dir, "plots", "agent_category_heatmap.png")
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+            self.save_figure(plot_path)
             plt.close()
             print(f"   ✓ Saved heatmap to: {plot_path}")
         except Exception as e:
@@ -4300,6 +4490,106 @@ class FrictionAnalyzerProject:
             'profile': profile.to_dict() if hasattr(profile, 'to_dict') else str(profile),
             'weaknesses': weaknesses
         }
+
+    def analyze_copilot_category_odds_ratio(self):
+        """
+        Calcola gli Odds Ratio di Copilot per categoria usando la baseline corretta.
+
+        Baseline corretta: proporzione di Copilot tra i commenti NEGATIVI (non tutti i commenti).
+        Questo evita la sovrastima causata dall'usare la proporzione totale.
+
+        Formula OR:
+        - Observed: (Copilot in category) / (Total in category)
+        - Expected: (Copilot in all negatives) / (Total negatives)
+        - OR = Observed / Expected
+        """
+        print("\n>>> Analyzing Copilot Category Odds Ratios (Corrected Baseline)...")
+
+        if not hasattr(self, 'analyzed_df') or self.analyzed_df is None:
+            print("   ⚠️  No analyzed data available.")
+            return
+
+        df = self.analyzed_df.copy()
+
+        # Check if friction_category exists
+        if 'friction_category' not in df.columns:
+            print("   ⚠️  friction_category not available.")
+            return
+
+        # Filter to negative comments only
+        df_neg = df[(df['is_negative'] == True) & (df['friction_category'].notna()) &
+                    (df['friction_category'] != 'N/A')].copy()
+
+        if len(df_neg) == 0:
+            print("   ⚠️  No negative comments with categories found.")
+            return
+
+        # Calculate CORRECT baseline: Copilot's share among NEGATIVE comments
+        total_negative = len(df_neg)
+        copilot_negative = len(df_neg[df_neg['agent'] == 'Copilot'])
+        copilot_baseline_negative = copilot_negative / total_negative if total_negative > 0 else 0
+
+        # Also calculate incorrect baseline (all comments) for comparison
+        total_all = len(df)
+        copilot_all = len(df[df['agent'] == 'Copilot'])
+        copilot_baseline_all = copilot_all / total_all if total_all > 0 else 0
+
+        print(f"   Total negative comments: {total_negative}")
+        print(f"   Copilot negative comments: {copilot_negative}")
+        print(f"   Copilot baseline (CORRECT - among negative): {copilot_baseline_negative:.3f} ({copilot_baseline_negative*100:.1f}%)")
+        print(f"   Copilot baseline (INCORRECT - among all): {copilot_baseline_all:.3f} ({copilot_baseline_all*100:.1f}%)")
+
+        # Calculate OR for each category
+        categories = df_neg['friction_category'].unique()
+        or_results = []
+
+        print("\n   Category Odds Ratios (Copilot):")
+        print("   " + "-" * 70)
+        print(f"   {'Category':<20} {'Observed':<12} {'OR (correct)':<15} {'OR (old baseline)':<15}")
+        print("   " + "-" * 70)
+
+        for category in sorted(categories):
+            cat_df = df_neg[df_neg['friction_category'] == category]
+            cat_total = len(cat_df)
+            cat_copilot = len(cat_df[cat_df['agent'] == 'Copilot'])
+
+            if cat_total > 0:
+                observed_rate = cat_copilot / cat_total
+
+                # Correct OR (using negative baseline)
+                or_correct = observed_rate / copilot_baseline_negative if copilot_baseline_negative > 0 else np.nan
+
+                # Incorrect OR (using all baseline) - for comparison
+                or_incorrect = observed_rate / copilot_baseline_all if copilot_baseline_all > 0 else np.nan
+
+                or_results.append({
+                    'category': category,
+                    'total_in_category': cat_total,
+                    'copilot_in_category': cat_copilot,
+                    'observed_rate': observed_rate,
+                    'baseline_correct': copilot_baseline_negative,
+                    'baseline_incorrect': copilot_baseline_all,
+                    'OR_correct': or_correct,
+                    'OR_incorrect': or_incorrect
+                })
+
+                print(f"   {category:<20} {observed_rate:.3f}        {or_correct:.2f}×           {or_incorrect:.2f}×")
+
+        print("   " + "-" * 70)
+        print(f"\n   Interpretation: OR > 1 means Copilot is overrepresented in that category")
+
+        # Save results
+        if or_results:
+            or_df = pd.DataFrame(or_results)
+            or_path = os.path.join(self.run_dir, "data", "copilot_category_odds_ratios.csv")
+            or_df.to_csv(or_path, index=False)
+            print(f"\n   ✓ Saved Odds Ratios to: {or_path}")
+
+            self.results['copilot_category_or'] = {
+                'baseline_correct': copilot_baseline_negative,
+                'baseline_incorrect': copilot_baseline_all,
+                'odds_ratios': or_results
+            }
 
     def analyze_devin_case(self):
         """
@@ -4445,12 +4735,10 @@ class FrictionAnalyzerProject:
 
         # 3a. Save topics by language (multilingual topic modeling)
         if 'topics_by_lang' in self.results:
-            topics_lang_dir = os.path.join(data_dir, "topics_by_language")
-            os.makedirs(topics_lang_dir, exist_ok=True)
             for lang, topic_df in self.results['topics_by_lang'].items():
-                lang_path = os.path.join(topics_lang_dir, f"topics_{lang}.csv")
+                lang_path = os.path.join(data_dir, f"topics_lang_{lang}.csv")
                 topic_df.to_csv(lang_path, index=False)
-            print(f"   ✓ Saved topics by language: {topics_lang_dir}/ ({len(self.results['topics_by_lang'])} languages)")
+            print(f"   ✓ Saved topics by language: {len(self.results['topics_by_lang'])} files (topics_lang_*.csv)")
 
         # 3b. Save temporal trends (RQ5)
         if 'temporal_trends' in self.results:
@@ -4635,8 +4923,9 @@ class FrictionAnalyzerProject:
             "kruskal_wallis_effect_size": self.results.get('kruskal_wallis_agents', {}).get('effect_size', None),
             "pointbiserial_correlation": self.results.get('correlation', {}).get('r', None),
             "pointbiserial_pvalue": self.results.get('correlation', {}).get('p', None),
-            "time_to_merge_correlation": self.results.get('time_to_merge_correlation', {}).get('r', None),
+            "time_to_merge_spearman_rho": self.results.get('time_to_merge_correlation', {}).get('rho', None),
             "time_to_merge_pvalue": self.results.get('time_to_merge_correlation', {}).get('p', None),
+            "time_to_merge_n": self.results.get('time_to_merge_correlation', {}).get('n', None),
             "iterations_correlation": self.results.get('iterations_correlation', {}).get('r', None),
             "iterations_pvalue": self.results.get('iterations_correlation', {}).get('p', None),
             "kruskal_wallis_categories_stat": self.results.get('kruskal_wallis_categories', {}).get('stat', None),
@@ -4651,13 +4940,11 @@ class FrictionAnalyzerProject:
 
         # 5. Save topic models (pickle) - per language
         if hasattr(self, 'topic_models_by_lang') and self.topic_models_by_lang:
-            topic_models_dir = os.path.join(models_dir, "bertopic_by_language")
-            os.makedirs(topic_models_dir, exist_ok=True)
             for lang, model in self.topic_models_by_lang.items():
-                model_path = os.path.join(topic_models_dir, f"bertopic_{lang}.pkl")
+                model_path = os.path.join(models_dir, f"bertopic_{lang}.pkl")
                 with open(model_path, 'wb') as f:
                     pickle.dump(model, f)
-            print(f"   ✓ Saved BERTopic models: {topic_models_dir}/ ({len(self.topic_models_by_lang)} languages)")
+            print(f"   ✓ Saved BERTopic models: {len(self.topic_models_by_lang)} files (bertopic_*.pkl)")
         elif hasattr(self, 'topic_model'):
             # Backward compatibility: save single model if no per-language models
             model_path = os.path.join(models_dir, "bertopic_model.pkl")
@@ -4785,9 +5072,11 @@ class FrictionAnalyzerProject:
         self.analyze_model_disagreements()  # Confusion analysis between models
         self.analyze_repository_distribution()  # Repository-level stats
         self.analyze_mixed_effects()  # Mixed-effects model with repo as random effect
+        self.analyze_mixed_effects_pr_level()  # Sensitivity check: PR-level clustering
         self.analyze_with_matching()  # Propensity score matching
         self.analyze_top_topics()  # Top 5 topics interpretation
         self.analyze_agent_category_profile()  # Agent × Category profile
+        self.analyze_copilot_category_odds_ratio()  # Copilot OR with correct baseline
         self.analyze_devin_case()  # Devin uniform friction analysis
 
         # Enhanced Research Questions
